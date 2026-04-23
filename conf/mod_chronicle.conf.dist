@@ -1,0 +1,38 @@
+#
+# Copyright (C) 2024+ Chronicle <https://github.com/Emyrk/chronicle>
+# Released under GNU AGPL v3 license
+#
+
+[worldserver]
+
+########################################
+# Chronicle Logger configuration
+########################################
+#
+#    Chronicle.Enable
+#        Description: Enable server-side combat log generation.
+#                     Log files are created per dungeon/raid instance in
+#                     Chronicle's V2 pipe-delimited format.
+#        Default:     1 - Enabled
+#                     0 - Disabled
+#
+
+Chronicle.Enable = 1
+
+#
+#    Chronicle.LogDir
+#        Description: Subdirectory name (relative to LogsDir) where combat
+#                     log files are written.
+#        Default:     "chronicle_logs"
+#
+
+Chronicle.LogDir = "chronicle_logs"
+
+#
+#    Chronicle.RealmName
+#        Description: Realm name written into the HEADER event.
+#                     Used by Chronicle to identify the source server.
+#        Default:     "AzerothCore"
+#
+
+Chronicle.RealmName = "AzerothCore"
