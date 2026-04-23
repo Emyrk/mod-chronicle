@@ -21,6 +21,7 @@
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <thread>
 #include <unordered_set>
 
 class Aura;
@@ -76,6 +77,9 @@ public:
     static std::string SpellAuraApplied(Unit* target, Aura* aura);
     static std::string SpellAuraRemoved(Unit* target, AuraApplication* aurApp);
     static std::string SpellCastSuccess(Unit* caster, SpellInfo const* spell);
+    static std::string EnvironmentalDamage(Player* victim, uint8 envType,
+                                           uint32 damage, uint32 absorbed,
+                                           uint32 resisted);
 };
 
 // ---------------------------------------------------------------------------
@@ -84,7 +88,8 @@ public:
 class CombatLogWriter
 {
 public:
-    CombatLogWriter(std::string const& dir, uint32 mapId, uint32 instanceId);
+    CombatLogWriter(std::string const& dir, uint32 mapId, uint32 instanceId,
+                    std::string const& mapName, std::string const& realmName);
     ~CombatLogWriter();
 
     void WriteLine(std::string const& line);
@@ -92,10 +97,16 @@ public:
     void Close();
     bool IsOpen() const;
     std::string const& GetPath() const { return _path; }
+    uint32 GetInstanceId() const { return _instanceId; }
+    std::string const& GetMapName() const { return _mapName; }
+    std::string const& GetRealmName() const { return _realmName; }
 
 private:
     std::ofstream _file;
     std::string   _path;
+    uint32        _instanceId;
+    std::string   _mapName;
+    std::string   _realmName;
 };
 
 // ---------------------------------------------------------------------------
@@ -121,6 +132,10 @@ public:
     // Called from combat hooks before writing damage/heal/death events.
     void EnsureUnitInfo(Unit* unit);
 
+    // Called from patched Player::EnvironmentalDamage().
+    void OnEnvironmentalDamage(Player* player, uint8 envType, uint32 damage,
+                               uint32 absorbed, uint32 resisted);
+
 private:
     InstanceTracker() = default;
 
@@ -131,8 +146,13 @@ private:
     // Set of (instanceId, unitGuid) pairs to avoid duplicate UNIT_INFO
     std::unordered_map<uint32, std::unordered_set<uint64>> _seenUnits;
 
+    static void UploadAndDelete(std::string path, std::string url, std::string secret,
+                                uint32 instanceId, std::string mapName, std::string realmName);
+
     bool        _enabled   = false;
     std::string _logDir    = "chronicle_logs";
+    std::string _uploadURL;
+    std::string _uploadSecret;
 };
 
 #endif // MOD_CHRONICLE_H

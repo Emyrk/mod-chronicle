@@ -75,7 +75,13 @@ Default settings:
 ```ini
 Chronicle.Enable = 1
 Chronicle.LogDir = "chronicle_logs"
+Chronicle.UploadURL = ""       # Set to Chronicle endpoint for auto-upload
+Chronicle.UploadSecret = ""    # Shared secret for upload auth
 ```
+
+When both `UploadURL` and `UploadSecret` are configured, log files are
+automatically uploaded to Chronicle when an instance closes and deleted on
+success.
 
 ### 4. Getting Combat Logs
 

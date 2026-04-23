@@ -440,9 +440,62 @@ std::string EventFormatter::SpellCastSuccess(Unit* caster, SpellInfo const* spel
     return ss.str();
 }
 
+// ---------------------------------------------------------------------------
+// ENVIRONMENTAL_DAMAGE — fall, lava, drowning, etc.
+// ---------------------------------------------------------------------------
+static const char* EnvTypeToString(uint8 type)
+{
+    switch (type)
+    {
+        case 0:  return "Fatigue";   // DAMAGE_EXHAUSTED
+        case 1:  return "Drowning";  // DAMAGE_DROWNING
+        case 2:  return "Falling";   // DAMAGE_FALL
+        case 3:  return "Lava";      // DAMAGE_LAVA
+        case 4:  return "Slime";     // DAMAGE_SLIME
+        case 5:  return "Fire";      // DAMAGE_FIRE
+        case 6:  return "Falling";   // DAMAGE_FALL_TO_VOID
+        default: return "Unknown";
+    }
+}
+
+static uint32 EnvSchool(uint8 type)
+{
+    switch (type)
+    {
+        case 3:  return 4;  // DAMAGE_LAVA  → Fire
+        case 4:  return 8;  // DAMAGE_SLIME → Nature
+        case 5:  return 4;  // DAMAGE_FIRE  → Fire
+        default: return 1;  // Physical
+    }
+}
+
+std::string EventFormatter::EnvironmentalDamage(Player* victim, uint8 envType,
+                                                uint32 damage, uint32 absorbed,
+                                                uint32 resisted)
+{
+    uint32 school = EnvSchool(envType);
+    std::ostringstream ss;
+    ss << Now() << "  ENVIRONMENTAL_DAMAGE,"
+       << "0x0000000000000000,\"\",0x0"   // source (environment — no unit)
+       << "," << Guid(victim->GetGUID())
+       << ",\"" << victim->GetName() << "\""
+       << ",0x0"
+       << "," << EnvTypeToString(envType)
+       << "," << damage
+       << ",0"              // overkill
+       << "," << school
+       << "," << resisted
+       << ",0"              // blocked
+       << "," << absorbed
+       << ",nil,nil,nil";   // critical, glancing, crushing
+    return ss.str();
+}
+
 // ===== CombatLogWriter =====
 
-CombatLogWriter::CombatLogWriter(std::string const& dir, uint32 mapId, uint32 instanceId)
+CombatLogWriter::CombatLogWriter(std::string const& dir, uint32 mapId, uint32 instanceId,
+                                 std::string const& mapName, std::string const& realmName)
+    : _instanceId(instanceId), _mapName(mapName), _realmName(realmName)
 {
     std::filesystem::create_directories(dir);
 
@@ -510,10 +563,12 @@ InstanceTracker& InstanceTracker::Instance()
 
 void InstanceTracker::LoadConfig()
 {
-    _enabled   = sConfigMgr->GetOption<bool>("Chronicle.Enable", true);
-    _logDir    = sConfigMgr->GetOption<std::string>("Chronicle.LogDir", "chronicle_logs");
-    LOG_INFO("module", "Chronicle: enabled={}, logDir={}",
-             _enabled, _logDir);
+    _enabled      = sConfigMgr->GetOption<bool>("Chronicle.Enable", true);
+    _logDir       = sConfigMgr->GetOption<std::string>("Chronicle.LogDir", "chronicle_logs");
+    _uploadURL    = sConfigMgr->GetOption<std::string>("Chronicle.UploadURL", "");
+    _uploadSecret = sConfigMgr->GetOption<std::string>("Chronicle.UploadSecret", "");
+    LOG_INFO("module", "Chronicle: enabled={}, logDir={}, upload={}",
+             _enabled, _logDir, _uploadURL.empty() ? "disabled" : _uploadURL);
 }
 
 CombatLogWriter* InstanceTracker::GetOrCreateWriter(Map* map)
@@ -533,12 +588,14 @@ CombatLogWriter* InstanceTracker::GetOrCreateWriter(Map* map)
     else
         logPath = logsDir + "/" + _logDir;
 
-    auto writer = std::make_unique<CombatLogWriter>(logPath, map->GetId(), instanceId);
+    std::string realmName = sWorld->GetRealmName();
+    auto writer = std::make_unique<CombatLogWriter>(logPath, map->GetId(), instanceId,
+                                                     map->GetMapName(), realmName);
     if (!writer->IsOpen())
         return nullptr;
 
     // Write CHRONICLE_HEADER and CHRONICLE_ZONE_INFO
-    writer->WriteLine(EventFormatter::Header(sWorld->GetRealmName()));
+    writer->WriteLine(EventFormatter::Header(realmName));
     std::string instanceType = map->IsRaid() ? "raid" : "party";
     writer->WriteLine(EventFormatter::ZoneInfo(map->GetMapName(), map->GetId(), instanceId, instanceType));
 
@@ -570,15 +627,79 @@ void InstanceTracker::OnPlayerLeaveInstance(Map* map, Player* /*player*/)
 
 void InstanceTracker::RemoveInstance(uint32 instanceId)
 {
-    std::lock_guard<std::mutex> lock(_mutex);
-
-    auto it = _writers.find(instanceId);
-    if (it != _writers.end())
+    std::string filePath;
+    uint32 instId = 0;
+    std::string mapName;
+    std::string realmName;
     {
-        it->second->Close();
-        _writers.erase(it);
+        std::lock_guard<std::mutex> lock(_mutex);
+
+        auto it = _writers.find(instanceId);
+        if (it != _writers.end())
+        {
+            it->second->Close();
+            filePath  = it->second->GetPath();
+            instId    = it->second->GetInstanceId();
+            mapName   = it->second->GetMapName();
+            realmName = it->second->GetRealmName();
+            _writers.erase(it);
+        }
+        _seenUnits.erase(instanceId);
     }
-    _seenUnits.erase(instanceId);
+
+    // Upload in background thread (doesn't block game server)
+    if (!filePath.empty() && !_uploadURL.empty() && !_uploadSecret.empty())
+    {
+        std::thread(&InstanceTracker::UploadAndDelete, filePath,
+                    _uploadURL, _uploadSecret,
+                    instId, std::move(mapName), std::move(realmName)).detach();
+    }
+}
+
+// static
+void InstanceTracker::UploadAndDelete(std::string path,
+                                       std::string url,
+                                       std::string secret,
+                                       uint32 instanceId,
+                                       std::string mapName,
+                                       std::string realmName)
+{
+    // Shell out to curl for simplicity — no need for libcurl dependency
+    // in a research module. The thread is detached so it won't block
+    // the game server.
+    std::string cmd =
+        "curl -s -o /dev/null -w '%{http_code}' "
+        "-X POST "
+        "-H 'Authorization: Bearer " + secret + "' "
+        "-H 'X-Chronicle-Instance-Id: " + std::to_string(instanceId) + "' "
+        "-H 'X-Chronicle-Instance-Name: " + mapName + "' "
+        "-H 'X-Chronicle-Realm-Name: " + realmName + "' "
+        "-F 'combat_log=@" + path + "' "
+        "'" + url + "'";
+
+    FILE* pipe = popen(cmd.c_str(), "r");
+    if (!pipe)
+    {
+        LOG_ERROR("module", "Chronicle: failed to run curl for upload of {}", path);
+        return;
+    }
+
+    char buf[16];
+    std::string httpCode;
+    while (fgets(buf, sizeof(buf), pipe))
+        httpCode += buf;
+    int exitCode = pclose(pipe);
+
+    if (exitCode == 0 && httpCode == "201")
+    {
+        std::filesystem::remove(path);
+        LOG_INFO("module", "Chronicle: uploaded and deleted {}", path);
+    }
+    else
+    {
+        LOG_ERROR("module", "Chronicle: upload failed for {} (HTTP {}, exit {})",
+                  path, httpCode, exitCode);
+    }
 }
 
 void InstanceTracker::EnsureUnitInfo(Unit* unit)
@@ -624,4 +745,13 @@ void InstanceTracker::WriteForUnit(Unit* unit, std::string const& line)
         return;
 
     it->second->WriteLine(line);
+}
+
+void InstanceTracker::OnEnvironmentalDamage(Player* player, uint8 envType,
+                                            uint32 damage, uint32 absorbed,
+                                            uint32 resisted)
+{
+    WriteForUnit(player, EventFormatter::EnvironmentalDamage(player, envType,
+                                                             damage, absorbed,
+                                                             resisted));
 }

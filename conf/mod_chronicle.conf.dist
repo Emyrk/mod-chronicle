@@ -27,3 +27,21 @@ Chronicle.Enable = 1
 #
 
 Chronicle.LogDir = "chronicle_logs"
+
+#
+#    Chronicle.UploadURL
+#        Description: URL of the Chronicle server upload endpoint.
+#                     When set, log files are POSTed here after an instance
+#                     closes and deleted on success.
+#        Default:     "" (disabled)
+#
+
+Chronicle.UploadURL = ""
+
+#
+#    Chronicle.UploadSecret
+#        Description: Shared secret sent as Bearer token for server uploads.
+#        Default:     "" (disabled)
+#
+
+Chronicle.UploadSecret = ""

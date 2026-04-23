@@ -174,7 +174,13 @@ Config auto-copies to `env/dist/etc/mod_chronicle.conf` on first run:
 ```ini
 Chronicle.Enable = 1
 Chronicle.LogDir = "chronicle_logs"
+Chronicle.UploadURL = ""       # Chronicle server endpoint, e.g. https://chronicle.example.com/api/v1/raidlogs/logs/server-upload
+Chronicle.UploadSecret = ""    # Shared secret (Bearer token) for upload auth
 ```
+
+When `UploadURL` and `UploadSecret` are both set, the module automatically uploads
+each instance's log file to Chronicle when the instance is destroyed, then deletes
+the local file on success. The upload runs in a background thread via `curl`.
 
 ## File Structure
 
