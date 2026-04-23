@@ -36,6 +36,8 @@ public:
         UNITHOOK_ON_AURA_APPLY,
         UNITHOOK_ON_AURA_REMOVE,
         UNITHOOK_ON_UNIT_DEATH,
+        UNITHOOK_ON_UNIT_ENTER_EVADE_MODE,
+        UNITHOOK_ON_UNIT_ENTER_COMBAT,
     }) { }
 
     // -----------------------------------------------------------------------
@@ -127,6 +129,35 @@ public:
 
         InstanceTracker::Instance().WriteForUnit(
             unit, EventFormatter::UnitDied(killer, unit));
+    }
+
+    // -----------------------------------------------------------------------
+    // OnUnitEnterEvadeMode — creature resets → CHRONICLE_UNIT_EVADE
+    // -----------------------------------------------------------------------
+    void OnUnitEnterEvadeMode(Unit* unit, uint8 evadeReason) override
+    {
+        if (!unit || !InstanceTracker::Instance().IsEnabled())
+            return;
+
+        InstanceTracker::Instance().EnsureUnitInfo(unit);
+
+        InstanceTracker::Instance().WriteForUnit(
+            unit, EventFormatter::UnitEvade(unit, evadeReason));
+    }
+
+    // -----------------------------------------------------------------------
+    // OnUnitEnterCombat — unit enters combat → CHRONICLE_UNIT_COMBAT
+    // -----------------------------------------------------------------------
+    void OnUnitEnterCombat(Unit* unit, Unit* victim) override
+    {
+        if (!unit || !InstanceTracker::Instance().IsEnabled())
+            return;
+
+        InstanceTracker::Instance().EnsureUnitInfo(unit);
+        InstanceTracker::Instance().EnsureUnitInfo(victim);
+
+        InstanceTracker::Instance().WriteForUnit(
+            unit, EventFormatter::UnitCombat(unit, victim));
     }
 };
 

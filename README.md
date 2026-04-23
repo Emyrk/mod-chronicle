@@ -75,7 +75,6 @@ Default settings:
 ```ini
 Chronicle.Enable = 1
 Chronicle.LogDir = "chronicle_logs"
-Chronicle.RealmName = "AzerothCore"
 ```
 
 ### 4. Getting Combat Logs

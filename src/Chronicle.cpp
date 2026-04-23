@@ -16,6 +16,7 @@
 #include "Spell.h"
 #include "SpellInfo.h"
 #include "SpellAuras.h"
+#include "World.h"
 
 #include <chrono>
 #include <cstdio>
@@ -232,6 +233,35 @@ std::string EventFormatter::UnitInfo(Unit* unit)
     return ss.str();
 }
 
+// ---------------------------------------------------------------------------
+// CHRONICLE_UNIT_EVADE — emitted when a creature enters evade mode.
+// Fields: guid, "name", why (EvadeReason enum)
+// ---------------------------------------------------------------------------
+std::string EventFormatter::UnitEvade(Unit* unit, uint8 evadeReason)
+{
+    std::ostringstream ss;
+    ss << Now() << "  CHRONICLE_UNIT_EVADE"
+       << "," << Guid(unit->GetGUID())
+       << ",\"" << unit->GetName() << "\""
+       << "," << static_cast<int>(evadeReason);
+    return ss.str();
+}
+
+// ---------------------------------------------------------------------------
+// CHRONICLE_UNIT_COMBAT — emitted when a unit enters combat with a victim.
+// Fields: unitGuid, "unitName", victimGuid, "victimName"
+// ---------------------------------------------------------------------------
+std::string EventFormatter::UnitCombat(Unit* unit, Unit* victim)
+{
+    std::ostringstream ss;
+    ss << Now() << "  CHRONICLE_UNIT_COMBAT"
+       << "," << Guid(unit->GetGUID())
+       << ",\"" << unit->GetName() << "\""
+       << "," << Guid(victim ? victim->GetGUID() : ObjectGuid::Empty)
+       << ",\"" << (victim ? victim->GetName() : "") << "\"";
+    return ss.str();
+}
+
 // ===== Standard WotLK Combat Events =====
 
 // ---------------------------------------------------------------------------
@@ -428,10 +458,8 @@ void InstanceTracker::LoadConfig()
 {
     _enabled   = sConfigMgr->GetOption<bool>("Chronicle.Enable", true);
     _logDir    = sConfigMgr->GetOption<std::string>("Chronicle.LogDir", "chronicle_logs");
-    _realmName = sConfigMgr->GetOption<std::string>("Chronicle.RealmName", "AzerothCore");
-
-    LOG_INFO("module", "Chronicle: enabled={}, logDir={}, realm={}",
-             _enabled, _logDir, _realmName);
+    LOG_INFO("module", "Chronicle: enabled={}, logDir={}",
+             _enabled, _logDir);
 }
 
 CombatLogWriter* InstanceTracker::GetOrCreateWriter(Map* map)
@@ -456,7 +484,7 @@ CombatLogWriter* InstanceTracker::GetOrCreateWriter(Map* map)
         return nullptr;
 
     // Write CHRONICLE_HEADER and CHRONICLE_ZONE_INFO
-    writer->WriteLine(EventFormatter::Header(_realmName));
+    writer->WriteLine(EventFormatter::Header(sWorld->GetRealmName()));
     std::string instanceType = map->IsRaid() ? "raid" : "party";
     writer->WriteLine(EventFormatter::ZoneInfo(map->GetMapName(), map->GetId(), instanceId, instanceType));
 
@@ -476,15 +504,6 @@ void InstanceTracker::OnPlayerEnterInstance(Map* map, Player* player)
     if (!writer)
         return;
 
-    uint32 instanceId = map->GetInstanceId();
-    uint64 playerGuid = player->GetGUID().GetRawValue();
-
-    // Only write COMBATANT_INFO once per player per instance
-    auto& seen = _seenPlayers[instanceId];
-    if (seen.count(playerGuid))
-        return;
-
-    seen.insert(playerGuid);
     writer->WriteLine(EventFormatter::CombatantInfo(player));
     writer->Flush();
 }
@@ -505,7 +524,6 @@ void InstanceTracker::RemoveInstance(uint32 instanceId)
         it->second->Close();
         _writers.erase(it);
     }
-    _seenPlayers.erase(instanceId);
     _seenUnits.erase(instanceId);
 }
 

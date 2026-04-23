@@ -65,6 +65,8 @@ public:
                                 uint32 instanceId, std::string const& instanceType);
     static std::string CombatantInfo(Player* player);
     static std::string UnitInfo(Unit* unit);
+    static std::string UnitEvade(Unit* unit, uint8 evadeReason);
+    static std::string UnitCombat(Unit* unit, Unit* victim);
 
     // --- Standard WotLK combat events ---
     static std::string SwingDamage(Unit* attacker, Unit* victim, uint32 damage);
@@ -126,14 +128,11 @@ private:
 
     std::mutex _mutex;
     std::unordered_map<uint32, std::unique_ptr<CombatLogWriter>> _writers;
-    // Set of (instanceId, playerGuid) pairs to avoid duplicate COMBATANT_INFO
-    std::unordered_map<uint32, std::unordered_set<uint64>> _seenPlayers;
     // Set of (instanceId, unitGuid) pairs to avoid duplicate UNIT_INFO
     std::unordered_map<uint32, std::unordered_set<uint64>> _seenUnits;
 
     bool        _enabled   = false;
     std::string _logDir    = "chronicle_logs";
-    std::string _realmName = "AzerothCore";
 };
 
 #endif // MOD_CHRONICLE_H

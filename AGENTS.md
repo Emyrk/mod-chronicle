@@ -174,7 +174,6 @@ Config auto-copies to `env/dist/etc/mod_chronicle.conf` on first run:
 ```ini
 Chronicle.Enable = 1
 Chronicle.LogDir = "chronicle_logs"
-Chronicle.RealmName = "AzerothCore"
 ```
 
 ## File Structure

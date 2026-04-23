@@ -27,12 +27,3 @@ Chronicle.Enable = 1
 #
 
 Chronicle.LogDir = "chronicle_logs"
-
-#
-#    Chronicle.RealmName
-#        Description: Realm name written into the HEADER event.
-#                     Used by Chronicle to identify the source server.
-#        Default:     "AzerothCore"
-#
-
-Chronicle.RealmName = "AzerothCore"
