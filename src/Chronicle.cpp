@@ -17,7 +17,9 @@
 #include "SpellInfo.h"
 #include "SpellAuras.h"
 #include "World.h"
+#include "DBCStores.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <ctime>
@@ -47,6 +49,7 @@ uint64 EventFormatter::Now()
 
 // ---------------------------------------------------------------------------
 // UnitFlags — compute WotLK COMBATLOG_OBJECT_* flags from Unit properties.
+// This is incomplete compared to the client side logs.
 // ---------------------------------------------------------------------------
 uint32 EventFormatter::UnitFlags(Unit* unit)
 {
@@ -64,26 +67,6 @@ uint32 EventFormatter::UnitFlags(Unit* unit)
         flags |= 0x1000;  // COMBATLOG_OBJECT_TYPE_PET
     else
         flags |= 0x0800;  // COMBATLOG_OBJECT_TYPE_NPC
-
-    // Control flags
-    if (unit->IsPlayer() || unit->GetOwnerGUID().IsPlayer())
-        flags |= 0x0100;  // COMBATLOG_OBJECT_CONTROL_PLAYER
-    else
-        flags |= 0x0200;  // COMBATLOG_OBJECT_CONTROL_NPC
-
-    // Reaction — approximate: players + player pets = friendly, NPCs = hostile
-    if (unit->IsPlayer() || unit->GetOwnerGUID().IsPlayer())
-        flags |= 0x0010;  // COMBATLOG_OBJECT_REACTION_FRIENDLY
-    else
-        flags |= 0x0040;  // COMBATLOG_OBJECT_REACTION_HOSTILE
-
-    // Affiliation — players/pets in the instance are raid members
-    if (unit->IsPlayer())
-        flags |= 0x0004;  // COMBATLOG_OBJECT_AFFILIATION_RAID
-    else if (unit->GetOwnerGUID().IsPlayer())
-        flags |= 0x0004;  // COMBATLOG_OBJECT_AFFILIATION_RAID (pet of raid member)
-    else
-        flags |= 0x0008;  // COMBATLOG_OBJECT_AFFILIATION_OUTSIDER
 
     return flags;
 }
@@ -170,6 +153,73 @@ std::string EventFormatter::ZoneInfo(std::string const& zoneName, uint32 mapId,
 }
 
 // ---------------------------------------------------------------------------
+// BuildTalentString — produces the same format as the vanilla Lua addon:
+//   "215303100000000000}055051000050122231}00000000000000000000"
+// One digit per talent slot (the invested rank, 0 if unlearned), three tabs
+// separated by '}', talents ordered by (Row, Col) within each tab.
+// ---------------------------------------------------------------------------
+static std::string BuildTalentString(Player* player)
+{
+    uint32 const* tabPages = GetTalentTabPages(player->getClass());
+    if (!tabPages)
+        return "";
+
+    uint8 activeSpec = player->GetActiveSpec();
+    const PlayerTalentMap& talentMap = player->GetTalentMap();
+
+    std::string result;
+    for (uint8 tab = 0; tab < 3; ++tab)
+    {
+        if (tab > 0)
+            result += '}';
+
+        uint32 tabId = tabPages[tab];
+        if (!tabId)
+            continue;
+
+        // Collect talents for this tab.
+        struct TalentSlot { uint32 row; uint32 col; uint8 rank; };
+        std::vector<TalentSlot> slots;
+
+        for (uint32 i = 0; i < sTalentStore.GetNumRows(); ++i)
+        {
+            TalentEntry const* talent = sTalentStore.LookupEntry(i);
+            if (!talent || talent->TalentTab != tabId)
+                continue;
+
+            // Determine the player's rank in this talent (0 = unlearned).
+            uint8 rank = 0;
+            for (uint8 r = MAX_TALENT_RANK; r > 0; --r)
+            {
+                uint32 spellId = talent->RankID[r - 1];
+                if (!spellId)
+                    continue;
+                auto itr = talentMap.find(spellId);
+                if (itr != talentMap.end()
+                    && itr->second->State != PLAYERSPELL_REMOVED
+                    && itr->second->IsInSpec(activeSpec))
+                {
+                    rank = r;
+                    break;
+                }
+            }
+
+            slots.push_back({ talent->Row, talent->Col, rank });
+        }
+
+        // Sort by (Row, Col) to match the Lua GetTalentInfo ordering.
+        std::sort(slots.begin(), slots.end(), [](const TalentSlot& a, const TalentSlot& b) {
+            return a.row != b.row ? a.row < b.row : a.col < b.col;
+        });
+
+        for (auto const& s : slots)
+            result += static_cast<char>('0' + s.rank);
+    }
+
+    return result;
+}
+
+// ---------------------------------------------------------------------------
 // CHRONICLE_COMBATANT_INFO — emitted when a player enters the instance.
 // ---------------------------------------------------------------------------
 std::string EventFormatter::CombatantInfo(Player* player)
@@ -208,6 +258,10 @@ std::string EventFormatter::CombatantInfo(Player* player)
         }
     }
     ss << "\"";
+
+    // Talents: "ranks}ranks}ranks" — one digit per talent per tab, '}'-separated.
+    ss << ",\"" << BuildTalentString(player) << "\"";
+
     return ss.str();
 }
 
