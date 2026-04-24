@@ -1,0 +1,6 @@
+if(MODULES)
+    CollectSourceFiles(${CMAKE_CURRENT_SOURCE_DIR}/src PRIVATE_SOURCES)
+    target_sources(worldserver PRIVATE ${PRIVATE_SOURCES})
+    target_include_directories(worldserver PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(worldserver PRIVATE zlib)
+endif()

@@ -19,9 +19,16 @@
 #include "World.h"
 #include "DBCStores.h"
 
+#include <zlib.h>
+#include <boost/beast/core.hpp>
+#include <boost/beast/http.hpp>
+#include <boost/beast/ssl.hpp>
+#include <boost/asio/connect.hpp>
+#include <boost/asio/ip/tcp.hpp>
+#include <boost/asio/ssl/context.hpp>
+
 #include <algorithm>
 #include <chrono>
-#include <cstdio>
 #include <ctime>
 #include <filesystem>
 #include <iomanip>
@@ -656,6 +663,144 @@ void InstanceTracker::RemoveInstance(uint32 instanceId)
     }
 }
 
+// ---------------------------------------------------------------------------
+// Upload helpers — zlib gzip + Boost.Beast HTTP/HTTPS, no shell-out.
+// ---------------------------------------------------------------------------
+namespace {
+
+struct ParsedUrl
+{
+    std::string scheme;  // "http" or "https"
+    std::string host;
+    std::string port;
+    std::string target;  // path (always /azerothcore/upload)
+};
+
+// Parses the configured root URL and appends /azerothcore/upload as the target.
+// Handles trailing slash: both "https://host" and "https://host/" work.
+static bool ParseUploadUrl(std::string const& rootUrl, ParsedUrl& out)
+{
+    std::string rest;
+    if (rootUrl.substr(0, 8) == "https://") { out.scheme = "https"; rest = rootUrl.substr(8); }
+    else if (rootUrl.substr(0, 7) == "http://") { out.scheme = "http";  rest = rootUrl.substr(7); }
+    else return false;
+
+    // Strip path portion — we only want host[:port], then append our fixed path
+    auto slash = rest.find('/');
+    std::string hostport = (slash == std::string::npos) ? rest : rest.substr(0, slash);
+
+    auto colon = hostport.find(':');
+    if (colon != std::string::npos)
+    {
+        out.host = hostport.substr(0, colon);
+        out.port = hostport.substr(colon + 1);
+    }
+    else
+    {
+        out.host = hostport;
+        out.port = (out.scheme == "https") ? "443" : "80";
+    }
+
+    out.target = "/azerothcore/upload";
+    return !out.host.empty();
+}
+
+// Gzip-compress bytes from a file. Returns empty vector on error.
+static std::vector<Bytef> GzipFile(std::string const& path)
+{
+    std::ifstream file(path, std::ios::binary);
+    if (!file)
+        return {};
+    std::vector<Bytef> input(std::istreambuf_iterator<char>(file), {});
+
+    z_stream zs{};
+    // windowBits=31 → gzip wrapper (15 + 16)
+    if (deflateInit2(&zs, Z_BEST_COMPRESSION, Z_DEFLATED,
+                     31, 8, Z_DEFAULT_STRATEGY) != Z_OK)
+        return {};
+
+    std::vector<Bytef> output(deflateBound(&zs, static_cast<uLong>(input.size())) + 64);
+    zs.next_in   = input.data();
+    zs.avail_in  = static_cast<uInt>(input.size());
+    zs.next_out  = output.data();
+    zs.avail_out = static_cast<uInt>(output.size());
+
+    int ret = deflate(&zs, Z_FINISH);
+    deflateEnd(&zs);
+    if (ret != Z_STREAM_END)
+        return {};
+
+    output.resize(zs.total_out);
+    return output;
+}
+
+// Build a multipart/form-data body with the compressed log as the sole part.
+static std::string BuildMultipart(std::vector<Bytef> const& compressed,
+                                   std::string& contentTypeOut)
+{
+    static constexpr char kBoundary[] = "----ChronicleUploadBoundary7x83kq";
+    contentTypeOut = "multipart/form-data; boundary=";
+    contentTypeOut += kBoundary;
+
+    std::string body;
+    body += "--";
+    body += kBoundary;
+    body += "\r\nContent-Disposition: form-data; name=\"combat_log\"; filename=\"combat_log.gz\"\r\n";
+    body += "Content-Type: application/gzip\r\n\r\n";
+    body.append(reinterpret_cast<char const*>(compressed.data()), compressed.size());
+    body += "\r\n--";
+    body += kBoundary;
+    body += "--\r\n";
+    return body;
+}
+
+// Send an HTTP request and return the response status code.
+// Throws boost::system::system_error or std::exception on network error.
+static int DoSend(ParsedUrl const& parsed,
+                  boost::beast::http::request<boost::beast::http::string_body>& req)
+{
+    namespace beast = boost::beast;
+    namespace http  = beast::http;
+    namespace net   = boost::asio;
+    namespace ssl   = net::ssl;
+    using tcp       = net::ip::tcp;
+
+    net::io_context ioc;
+    tcp::resolver   resolver(ioc);
+    auto const endpoints = resolver.resolve(parsed.host, parsed.port);
+
+    if (parsed.scheme == "https")
+    {
+        ssl::context ctx(ssl::context::tlsv12_client);
+        ctx.set_default_verify_paths();
+        beast::ssl_stream<beast::tcp_stream> stream(ioc, ctx);
+        SSL_set_tlsext_host_name(stream.native_handle(), parsed.host.c_str());
+        beast::get_lowest_layer(stream).connect(endpoints);
+        stream.handshake(ssl::stream_base::client);
+        http::write(stream, req);
+        beast::flat_buffer buf;
+        http::response<http::string_body> res;
+        http::read(stream, buf, res);
+        beast::error_code ec;
+        stream.shutdown(ec);  // ignore graceful-shutdown errors
+        return static_cast<int>(res.result_int());
+    }
+    else
+    {
+        beast::tcp_stream stream(ioc);
+        stream.connect(endpoints);
+        http::write(stream, req);
+        beast::flat_buffer buf;
+        http::response<http::string_body> res;
+        http::read(stream, buf, res);
+        beast::error_code ec;
+        stream.socket().shutdown(tcp::socket::shutdown_both, ec);
+        return static_cast<int>(res.result_int());
+    }
+}
+
+} // anonymous namespace
+
 // static
 void InstanceTracker::UploadAndDelete(std::string path,
                                        std::string url,
@@ -664,45 +809,57 @@ void InstanceTracker::UploadAndDelete(std::string path,
                                        std::string mapName,
                                        std::string realmName)
 {
-    // Shell out to curl for simplicity — no need for libcurl dependency
-    // in a research module. The thread is detached so it won't block
-    // the game server.
-    // Pipe through gzip to compress before upload. Concatenated gzip
-    // streams are valid per spec, so the Go backend can simply append
-    // compressed blobs when merging logs from the same instance.
-    std::string cmd =
-        "gzip -c '" + path + "' | "
-        "curl -s -o /dev/null -w '%{http_code}' "
-        "-X POST "
-        "-H 'Authorization: Bearer " + secret + "' "
-        "-H 'X-Chronicle-Instance-Id: " + std::to_string(instanceId) + "' "
-        "-H 'X-Chronicle-Instance-Name: " + mapName + "' "
-        "-H 'X-Chronicle-Realm-Name: " + realmName + "' "
-        "-F 'combat_log=@-;type=application/gzip;filename=combat_log.gz' "
-        "'" + url + "'";
-
-    FILE* pipe = popen(cmd.c_str(), "r");
-    if (!pipe)
+    // 1. Gzip-compress the log file in memory (zlib, windowBits=31 → gzip format).
+    auto compressed = GzipFile(path);
+    if (compressed.empty())
     {
-        LOG_ERROR("module", "Chronicle: failed to run curl for upload of {}", path);
+        LOG_ERROR("module", "Chronicle: failed to gzip {}", path);
         return;
     }
 
-    char buf[16];
-    std::string httpCode;
-    while (fgets(buf, sizeof(buf), pipe))
-        httpCode += buf;
-    int exitCode = pclose(pipe);
-
-    if (exitCode == 0 && httpCode == "201")
+    // 2. Parse the configured root URL and append the fixed upload path.
+    //    Trailing slash on the configured value is handled: both
+    //    "https://host" and "https://host/" resolve to /azerothcore/upload.
+    ParsedUrl parsed;
+    if (!ParseUploadUrl(url, parsed))
     {
-        std::filesystem::remove(path);
-        LOG_INFO("module", "Chronicle: uploaded and deleted {}", path);
+        LOG_ERROR("module", "Chronicle: invalid upload URL: {}", url);
+        return;
     }
-    else
+
+    // 3. Build multipart/form-data body.
+    std::string contentType;
+    std::string body = BuildMultipart(compressed, contentType);
+
+    // 4. Build the HTTP request.
+    namespace http = boost::beast::http;
+    http::request<http::string_body> req{http::verb::post, parsed.target, 11};
+    req.set(http::field::host,          parsed.host);
+    req.set(http::field::content_type,  contentType);
+    req.set(http::field::authorization, "Bearer " + secret);
+    req.set("X-Chronicle-Instance-Id",   std::to_string(instanceId));
+    req.set("X-Chronicle-Instance-Name", mapName);
+    req.set("X-Chronicle-Realm-Name",    realmName);
+    req.body() = std::move(body);
+    req.prepare_payload();
+
+    // 5. Send and handle the response.
+    try
     {
-        LOG_ERROR("module", "Chronicle: upload failed for {} (HTTP {}, exit {})",
-                  path, httpCode, exitCode);
+        int status = DoSend(parsed, req);
+        if (status == 201)
+        {
+            std::filesystem::remove(path);
+            LOG_INFO("module", "Chronicle: uploaded and deleted {}", path);
+        }
+        else
+        {
+            LOG_ERROR("module", "Chronicle: upload failed for {} (HTTP {})", path, status);
+        }
+    }
+    catch (std::exception const& e)
+    {
+        LOG_ERROR("module", "Chronicle: upload exception for {}: {}", path, e.what());
     }
 }
 
