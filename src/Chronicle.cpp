@@ -667,14 +667,18 @@ void InstanceTracker::UploadAndDelete(std::string path,
     // Shell out to curl for simplicity — no need for libcurl dependency
     // in a research module. The thread is detached so it won't block
     // the game server.
+    // Pipe through gzip to compress before upload. Concatenated gzip
+    // streams are valid per spec, so the Go backend can simply append
+    // compressed blobs when merging logs from the same instance.
     std::string cmd =
+        "gzip -c '" + path + "' | "
         "curl -s -o /dev/null -w '%{http_code}' "
         "-X POST "
         "-H 'Authorization: Bearer " + secret + "' "
         "-H 'X-Chronicle-Instance-Id: " + std::to_string(instanceId) + "' "
         "-H 'X-Chronicle-Instance-Name: " + mapName + "' "
         "-H 'X-Chronicle-Realm-Name: " + realmName + "' "
-        "-F 'combat_log=@" + path + "' "
+        "-F 'combat_log=@-;type=application/gzip;filename=combat_log.gz' "
         "'" + url + "'";
 
     FILE* pipe = popen(cmd.c_str(), "r");
