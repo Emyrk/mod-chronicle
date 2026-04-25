@@ -285,6 +285,7 @@ public:
     ChronicleGlobalScript() : GlobalScript("ChronicleGlobalScript", {
         GLOBALHOOK_ON_SPELL_SEND_SPELL_GO,
         GLOBALHOOK_ON_AURA_APPLICATION_CLIENT_UPDATE,
+        GLOBALHOOK_ON_SPELL_EXECUTE_LOG_SUMMON_OBJECT,
     }) { }
 
     // -----------------------------------------------------------------------
@@ -304,6 +305,25 @@ public:
 
         InstanceTracker::Instance().WriteForUnit(
             caster, EventFormatter::SpellCastSuccess(caster, spellInfo));
+    }
+
+    // -----------------------------------------------------------------------
+    // OnSpellExecuteLogSummonObject — creature/object summoned → SPELL_SUMMON
+    // -----------------------------------------------------------------------
+    void OnSpellExecuteLogSummonObject(Spell* spell, WorldObject* obj) override
+    {
+        if (!spell || !spell->GetCaster() || !obj || !InstanceTracker::Instance().IsEnabled())
+            return;
+
+        Unit* caster = spell->GetCaster();
+        SpellInfo const* spellInfo = spell->m_spellInfo;
+        if (!spellInfo)
+            return;
+
+        InstanceTracker::Instance().EnsureUnitInfo(caster);
+
+        InstanceTracker::Instance().WriteForUnit(
+            caster, EventFormatter::SpellSummon(caster, spellInfo, obj));
     }
 
     // -----------------------------------------------------------------------

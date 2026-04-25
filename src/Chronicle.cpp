@@ -638,6 +638,25 @@ std::string EventFormatter::SpellCastSuccess(Unit* caster, SpellInfo const* spel
 }
 
 // ---------------------------------------------------------------------------
+// SPELL_SUMMON — a unit summoned a creature or game object.
+// WotLK format: SPELL_SUMMON,srcGUID,"srcName",srcFlags,dstGUID,"dstName",dstFlags,spellId,"spellName",0xSchool
+// ---------------------------------------------------------------------------
+std::string EventFormatter::SpellSummon(Unit* caster, SpellInfo const* spell,
+                                         WorldObject* summoned)
+{
+    std::ostringstream ss;
+    ss << Now() << "  SPELL_SUMMON,"
+       << Guid(caster ? caster->GetGUID() : ObjectGuid::Empty)
+       << ",\"" << (caster ? caster->GetName() : "") << "\""
+       << ",0x0"
+       << "," << Guid(summoned ? summoned->GetGUID() : ObjectGuid::Empty)
+       << ",\"" << (summoned ? summoned->GetName() : "") << "\""
+       << ",0x0";
+    AppendSpellPrefix(ss, spell->Id, spell->SpellName[0], spell->SchoolMask);
+    return ss.str();
+}
+
+// ---------------------------------------------------------------------------
 // UNIT_DIED — a unit has died.
 // ---------------------------------------------------------------------------
 std::string EventFormatter::UnitDied(Unit* killer, Unit* victim)

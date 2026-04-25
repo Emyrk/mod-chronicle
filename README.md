@@ -8,7 +8,7 @@ Every dungeon/raid instance gets its own log file. Events are written in
 real-time as combat happens, producing files that can be uploaded directly to
 Chronicle for analysis.
 
-> **Requires custom ScriptMgr hooks.** This module depends on 14 hooks added to
+> **Requires custom ScriptMgr hooks.** This module depends on 15 hooks added to
 > the AzerothCore core that are not in mainline. See
 > [Custom Hooks](#custom-scriptmgr-hooks) below.
 
@@ -32,6 +32,7 @@ These follow the standard WotLK combat log format: `<unix_millis>  EVENT_TYPE,pa
 | `DAMAGE_SHIELD` | `OnDealMeleeDamage` | Thorns/retribution aura damage |
 | `SPELL_AURA_APPLIED` | `OnAuraApplicationClientUpdate` | Buff/debuff applied |
 | `SPELL_AURA_REMOVED` | `OnAuraApplicationClientUpdate` | Buff/debuff removed |
+| `SPELL_SUMMON` | `OnSpellExecuteLogSummonObject` | Unit summoned a creature or game object (pet, totem, trap, etc.) |
 | `SPELL_CAST_SUCCESS` | `OnSpellSendSpellGo` | Spell cast completed (fires at `SPELL_GO` packet) |
 | `UNIT_DIED` | `OnUnitDeath` | Unit death |
 | `ENVIRONMENTAL_DAMAGE` | `OnEnvironmentalDamage` | Lava, drowning, falling, fatigue damage |
@@ -74,21 +75,7 @@ tree. AC's CMake auto-discovers any subdirectory containing `.cpp` files.
 This module requires 14 custom ScriptMgr hooks patched into the AzerothCore
 core. See [Custom ScriptMgr Hooks](#custom-scriptmgr-hooks) for details.
 
-### 3. Build
-
-From the `research/azerothcore/` directory:
-
-```bash
-# Full rebuild (core + module) — ~3-4 min with ccache
-make rebuild
-
-# Fast incremental rebuild (module changes only) — ~5-15s
-make rebuild-module
-```
-
-See [Development Workflow](#development-workflow) for details on `rebuild-module`.
-
-### 4. Configuration
+### 3. Configuration
 
 Configure via environment variables or `mod_chronicle.conf`:
 
@@ -117,71 +104,12 @@ ls ./env/dist/logs/chronicle_logs/
 # instance_249_2_1714000100.log   (Onyxia's Lair, instance 2)
 
 # Watch in real-time:
-make logs
-# or: tail -f ./env/dist/logs/chronicle_logs/instance_*.log
-```
-
-### 6. Connecting a WoW 3.3.5a Client
-
-| Service | Address |
-|---------|---------|
-| Auth server | `127.0.0.1:3724` |
-| World server | `127.0.0.1:8085` |
-| MySQL | `127.0.0.1:3306` (root / password) |
-
-1. Set your client's `realmlist.wtf` to `set realmlist 127.0.0.1`
-2. Create an account via the worldserver console (`docker attach ac-worldserver`):
-   ```
-   account create testuser testpass
-   account set gmlevel testuser 3 -1
-   ```
-3. Quick test — teleport into a dungeon and fight:
-   ```
-   .tele deadmines
-   ```
-4. Check `./env/dist/logs/chronicle_logs/` for the generated log.
-
-## Development Workflow
-
-### `make rebuild` — Full Rebuild (~3-4 min)
-
-Rebuilds the Docker image with core + module, recreates the worldserver
-container. Use when you've changed AzerothCore core files (e.g. hook patches).
-
-### `make rebuild-module` — Fast Incremental (~5-15s)
-
-Only recompiles changed module `.cpp`/`.h` files and relinks. Uses a persistent
-Docker volume for the cmake build tree — first run is slow (cmake configure),
-subsequent runs only touch changed files.
-
-```bash
-# Edit module source...
-vim modules/mod-chronicle/src/Chronicle.cpp
-
-# Rebuild and restart (~5-15s)
-make rebuild-module
-```
-
-How it works:
-1. Runs cmake inside a builder container (build stage with clang/cmake/ccache)
-2. Module source is bind-mounted — picks up local edits without image rebuild
-3. Build cache persists in a Docker volume across runs
-4. Hot-swaps the worldserver binary into the running container via `docker cp`
-5. Restarts worldserver to pick up the new binary
-
-### Other Targets
-
-```bash
-make up          # Start all services
-make down        # Stop all services
-make restart     # Restart worldserver (no rebuild)
-make logs        # Tail chronicle combat log files
-make server-logs # Tail worldserver stdout/stderr
+tail -f ./env/dist/logs/chronicle_logs/instance_*.log
 ```
 
 ## Custom ScriptMgr Hooks
 
-This module requires 14 hooks added to the AzerothCore core. These are
+This module requires 15 hooks added to the AzerothCore core. These are
 **read-only observer hooks** inserted at the server's packet-send points — they
 have zero gameplay impact.
 
@@ -203,11 +131,12 @@ The goal is to submit them upstream as a PR.
 | `OnSendPeriodicAuraLog(Unit*, SpellPeriodicAuraLogInfo*)` | `Unit::SendPeriodicAuraLog()` | Periodic tick (DoT/HoT/energize) |
 | `OnDealMeleeDamage(CalcDamageInfo*, DamageInfo*, uint32)` | `Unit::DealDamageShieldDamage()` | Damage shield (thorns) |
 
-### GlobalScript (3 hooks)
+### GlobalScript (4 hooks)
 
 | Hook | Inserted At | Data |
 |------|------------|------|
 | `OnSpellSendSpellGo(Spell*)` | `Spell::SendSpellGo()` | Spell cast success at `SPELL_GO` packet |
+| `OnSpellExecuteLogSummonObject(Spell*, WorldObject*)` | `Spell::ExecuteLogEffectSummonObject()` | Summon with caster spell + summoned object |
 | `OnAuraApplicationClientUpdate(Unit*, Aura*, bool)` | `AuraApplication::ClientUpdate()` | Aura applied/removed at client notification |
 | `OnChangeUpdateData(Object*, uint16, uint64)` | `Object::SetUInt32Value()` | Object field updates (unused by module currently) |
 
@@ -217,19 +146,6 @@ The goal is to submit them upstream as a PR.
 |------|------------|------|
 | `OnEnvironmentalDamage(Player*, EnviromentalDamage, uint32)` | `Player::EnvironmentalDamage()` | Environmental damage (lava, drowning, fall) |
 
-### Core Files Modified
-
-```
-src/server/game/Entities/Unit/Unit.cpp          (10 hook call sites)
-src/server/game/Entities/Player/Player.cpp      (1 hook call site)
-src/server/game/Spells/Spell.cpp                (1 hook call site)
-src/server/game/Spells/Auras/SpellAuras.cpp     (1 hook call site)
-src/server/game/Entities/Object/Object.cpp      (1 hook call site)
-src/server/game/Scripting/ScriptDefines/UnitScript.h/.cpp
-src/server/game/Scripting/ScriptDefines/GlobalScript.h/.cpp
-src/server/game/Scripting/ScriptDefines/PlayerScript.h/.cpp
-src/server/game/Scripting/ScriptMgr.h
-```
 
 ## Future Work
 

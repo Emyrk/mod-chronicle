@@ -34,6 +34,7 @@ class HealInfo;
 class Map;
 class Spell;
 class SpellInfo;
+class WorldObject;
 struct CalcDamageInfo;
 struct SpellNonMeleeDamage;
 struct SpellPeriodicAuraLogInfo;
@@ -109,6 +110,9 @@ public:
 
     // Spell cast
     static std::string SpellCastSuccess(Unit* caster, SpellInfo const* spell);
+
+    // Summon
+    static std::string SpellSummon(Unit* caster, SpellInfo const* spell, WorldObject* summoned);
 
     // Death
     static std::string UnitDied(Unit* killer, Unit* victim);
