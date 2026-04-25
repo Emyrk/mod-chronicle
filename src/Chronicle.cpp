@@ -673,11 +673,13 @@ struct ParsedUrl
     std::string scheme;  // "http" or "https"
     std::string host;
     std::string port;
-    std::string target;  // path (always /azerothcore/upload)
+    std::string target;  // path: configured root path + /azerothcore/upload
 };
 
-// Parses the configured root URL and appends /azerothcore/upload as the target.
-// Handles trailing slash: both "https://host" and "https://host/" work.
+// Parses the configured root URL and appends /azerothcore/upload to its path.
+// Trailing slashes on the configured value are stripped before appending, so
+// "https://host", "https://host/", "https://host/api", and "https://host/api/"
+// all produce well-formed targets.
 static bool ParseUploadUrl(std::string const& rootUrl, ParsedUrl& out)
 {
     std::string rest;
@@ -685,9 +687,10 @@ static bool ParseUploadUrl(std::string const& rootUrl, ParsedUrl& out)
     else if (rootUrl.substr(0, 7) == "http://") { out.scheme = "http";  rest = rootUrl.substr(7); }
     else return false;
 
-    // Strip path portion — we only want host[:port], then append our fixed path
+    // Split host[:port] from the path component.
     auto slash = rest.find('/');
     std::string hostport = (slash == std::string::npos) ? rest : rest.substr(0, slash);
+    std::string path     = (slash == std::string::npos) ? "" : rest.substr(slash);
 
     auto colon = hostport.find(':');
     if (colon != std::string::npos)
@@ -701,7 +704,10 @@ static bool ParseUploadUrl(std::string const& rootUrl, ParsedUrl& out)
         out.port = (out.scheme == "https") ? "443" : "80";
     }
 
-    out.target = "/azerothcore/upload";
+    // Strip trailing slash(es) from the configured path, then append the fixed suffix.
+    while (!path.empty() && path.back() == '/')
+        path.pop_back();
+    out.target = path + "/azerothcore/upload";
     return !out.host.empty();
 }
 
