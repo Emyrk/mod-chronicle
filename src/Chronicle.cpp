@@ -676,11 +676,11 @@ struct ParsedUrl
     std::string target;  // path: configured root path + /azerothcore/upload
 };
 
-// Parses the configured root URL and appends /azerothcore/upload to its path.
+// Parses the configured root URL and appends the given suffix to its path.
 // Trailing slashes on the configured value are stripped before appending, so
 // "https://host", "https://host/", "https://host/api", and "https://host/api/"
 // all produce well-formed targets.
-static bool ParseUploadUrl(std::string const& rootUrl, ParsedUrl& out)
+static bool ParseUrl(std::string const& rootUrl, std::string const& pathSuffix, ParsedUrl& out)
 {
     std::string rest;
     if (rootUrl.substr(0, 8) == "https://") { out.scheme = "https"; rest = rootUrl.substr(8); }
@@ -704,10 +704,10 @@ static bool ParseUploadUrl(std::string const& rootUrl, ParsedUrl& out)
         out.port = (out.scheme == "https") ? "443" : "80";
     }
 
-    // Strip trailing slash(es) from the configured path, then append the fixed suffix.
+    // Strip trailing slash(es) from the configured path, then append the suffix.
     while (!path.empty() && path.back() == '/')
         path.pop_back();
-    out.target = path + "/azerothcore/upload";
+    out.target = path + pathSuffix;
     return !out.host.empty();
 }
 
@@ -827,7 +827,7 @@ void InstanceTracker::UploadAndDelete(std::string path,
     //    Trailing slash on the configured value is handled: both
     //    "https://host" and "https://host/" resolve to /azerothcore/upload.
     ParsedUrl parsed;
-    if (!ParseUploadUrl(url, parsed))
+    if (!ParseUrl(url, "/azerothcore/upload", parsed))
     {
         LOG_ERROR("module", "Chronicle: invalid upload URL: {}", url);
         return;
@@ -860,12 +860,46 @@ void InstanceTracker::UploadAndDelete(std::string path,
         }
         else
         {
-            LOG_ERROR("module", "Chronicle: upload failed for {} (HTTP {})", path, status);
+            LOG_ERROR("module", "Chronicle: upload failed for {} (HTTP {}) url={}", path, status, url);
         }
     }
     catch (std::exception const& e)
     {
         LOG_ERROR("module", "Chronicle: upload exception for {}: {}", path, e.what());
+    }
+}
+
+// static
+void InstanceTracker::PingRemote(std::string url, std::string secret)
+{
+    ParsedUrl parsed;
+    if (!ParseUrl(url, "/azerothcore/ping", parsed))
+    {
+        LOG_ERROR("module", "Chronicle: ping failed — invalid URL: {}", url);
+        return;
+    }
+
+    namespace http = boost::beast::http;
+    http::request<http::string_body> req{http::verb::get, parsed.target, 11};
+    req.set(http::field::host,          parsed.host);
+    req.set(http::field::authorization, "Bearer " + secret);
+    req.prepare_payload();
+
+    try
+    {
+        int status = DoSend(parsed, req);
+        if (status == 200)
+        {
+            LOG_INFO("module", "Chronicle: ping OK (HTTP 200) — connected to {}", url);
+        }
+        else
+        {
+            LOG_ERROR("module", "Chronicle: ping failed (HTTP {}) — check UploadURL/UploadSecret", status);
+        }
+    }
+    catch (std::exception const& e)
+    {
+        LOG_ERROR("module", "Chronicle: ping exception — {}", e.what());
     }
 }
 

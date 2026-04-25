@@ -119,6 +119,9 @@ public:
 
     void LoadConfig();
     bool IsEnabled() const { return _enabled; }
+    std::string const& GetUploadURL() const { return _uploadURL; }
+    std::string const& GetUploadSecret() const { return _uploadSecret; }
+    static void PingRemote(std::string url, std::string secret);
 
     // Called from AllMapScript hooks
     void OnPlayerEnterInstance(Map* map, Player* player);

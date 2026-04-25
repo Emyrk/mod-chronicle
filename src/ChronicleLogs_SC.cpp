@@ -8,6 +8,7 @@
 
 #include "Chronicle.h"
 
+#include "Log.h"
 #include "Map.h"
 #include "Player.h"
 #include "ScriptMgr.h"
@@ -229,11 +230,30 @@ class ChronicleWorldScript : public WorldScript
 public:
     ChronicleWorldScript() : WorldScript("ChronicleWorldScript", {
         WORLDHOOK_ON_BEFORE_CONFIG_LOAD,
+        WORLDHOOK_ON_STARTUP,
     }) { }
 
     void OnBeforeConfigLoad(bool /*reload*/) override
     {
         InstanceTracker::Instance().LoadConfig();
+    }
+
+    void OnStartup() override
+    {
+        auto& tracker = InstanceTracker::Instance();
+        if (!tracker.IsEnabled())
+            return;
+
+        std::string url    = tracker.GetUploadURL();
+        std::string secret = tracker.GetUploadSecret();
+        if (url.empty() || secret.empty())
+        {
+            LOG_WARN("module", "Chronicle: skipping startup ping — UploadURL or UploadSecret not configured");
+            return;
+        }
+
+        // Run ping in a detached thread to avoid blocking server startup.
+        std::thread(InstanceTracker::PingRemote, url, secret).detach();
     }
 };
 
