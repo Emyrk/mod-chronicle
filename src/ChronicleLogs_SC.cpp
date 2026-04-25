@@ -45,7 +45,7 @@ public:
     // -----------------------------------------------------------------------
     // OnSendAttackStateUpdate — melee hit/miss → SWING_DAMAGE or SWING_MISSED
     // -----------------------------------------------------------------------
-    void OnSendAttackStateUpdate(CalcDamageInfo* damageInfo, int32 /*overkill*/) override
+    void OnSendAttackStateUpdate(CalcDamageInfo* damageInfo, int32 overkill) override
     {
         if (!damageInfo || !damageInfo->attacker || !InstanceTracker::Instance().IsEnabled())
             return;
@@ -60,11 +60,31 @@ public:
         {
             InstanceTracker::Instance().WriteForUnit(
                 damageInfo->target, EventFormatter::SwingMissed(damageInfo));
+            return;
         }
-        else
+
+        // Emit one SWING_DAMAGE per non-zero damage slot (weapons can
+        // have two damage types, e.g. physical + fire).  Overkill is
+        // distributed sequentially: slot 0 eats into HP first, its
+        // excess is overkill, and everything left spills to slot 1.
+        bool hasSlot1 = damageInfo->damages[1].damage
+                     || damageInfo->damages[1].absorb
+                     || damageInfo->damages[1].resist;
+
+        // Overkill peels off slot 1 (last applied) first, then slot 0.
+        int32 d2 = static_cast<int32>(damageInfo->damages[1].damage);
+        int32 slot1ok = hasSlot1 ? std::min(overkill, d2) : 0;
+        int32 slot0ok = overkill - slot1ok;
+
+        InstanceTracker::Instance().WriteForUnit(
+            damageInfo->target,
+            EventFormatter::SwingDamage(damageInfo, 0, slot0ok));
+
+        if (hasSlot1)
         {
             InstanceTracker::Instance().WriteForUnit(
-                damageInfo->target, EventFormatter::SwingDamage(damageInfo));
+                damageInfo->target,
+                EventFormatter::SwingDamage(damageInfo, 1, slot1ok));
         }
     }
 

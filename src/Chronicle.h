@@ -78,8 +78,11 @@ public:
 
     // --- Standard WotLK combat events ---
 
-    // Melee auto-attack with full outcome data
-    static std::string SwingDamage(CalcDamageInfo* damageInfo);
+    // Melee auto-attack with full outcome data.
+    // slot selects the damage sub-index (0 or 1).
+    // overkill is the hook-provided value (combined damage vs HP).
+    static std::string SwingDamage(CalcDamageInfo* damageInfo,
+                                   uint8 slot, int32 overkill);
     static std::string SwingMissed(CalcDamageInfo* damageInfo);
 
     // Spell damage with absorb/resist/block

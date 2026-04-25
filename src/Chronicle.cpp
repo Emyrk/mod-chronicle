@@ -390,16 +390,16 @@ static void AppendDamageSuffix(std::ostringstream& ss, uint32 amount,
 // ---------------------------------------------------------------------------
 // SWING_DAMAGE — melee auto-attack hit.
 // ---------------------------------------------------------------------------
-std::string EventFormatter::SwingDamage(CalcDamageInfo* damageInfo)
+std::string EventFormatter::SwingDamage(CalcDamageInfo* damageInfo,
+                                        uint8 slot, int32 overkill)
 {
     Unit* attacker = damageInfo->attacker;
     Unit* target   = damageInfo->target;
-    uint32 amount  = damageInfo->damages[0].damage;
-    int32  overkill = static_cast<int32>(amount) - static_cast<int32>(target ? target->GetHealth() : amount);
-    uint32 school   = damageInfo->damages[0].damageSchoolMask;
-    uint32 resisted = damageInfo->damages[0].resist;
-    uint32 blocked  = damageInfo->blocked_amount;
-    uint32 absorbed = damageInfo->damages[0].absorb;
+    uint32 amount   = damageInfo->damages[slot].damage;
+    uint32 school   = damageInfo->damages[slot].damageSchoolMask;
+    uint32 resisted = damageInfo->damages[slot].resist;
+    uint32 blocked  = slot == 0 ? damageInfo->blocked_amount : 0;
+    uint32 absorbed = damageInfo->damages[slot].absorb;
     bool   crit     = damageInfo->hitOutCome == MELEE_HIT_CRIT;
     bool   glancing = damageInfo->hitOutCome == MELEE_HIT_GLANCING;
     bool   crushing = damageInfo->hitOutCome == MELEE_HIT_CRUSHING;
@@ -407,8 +407,8 @@ std::string EventFormatter::SwingDamage(CalcDamageInfo* damageInfo)
     std::ostringstream ss;
     ss << Now() << "  SWING_DAMAGE,"
        << BaseParams(attacker, target);
-    AppendDamageSuffix(ss, amount, overkill, school, resisted, blocked, absorbed,
-                       crit, glancing, crushing);
+    AppendDamageSuffix(ss, amount, overkill, school, resisted, blocked,
+                       absorbed, crit, glancing, crushing);
     return ss.str();
 }
 
