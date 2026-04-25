@@ -827,7 +827,7 @@ void InstanceTracker::UploadAndDelete(std::string path,
     //    Trailing slash on the configured value is handled: both
     //    "https://host" and "https://host/" resolve to /azerothcore/upload.
     ParsedUrl parsed;
-    if (!ParseUrl(url, "/azerothcore/upload", parsed))
+    if (!ParseUrl(url, "/api/v1/azerothcore/upload", parsed))
     {
         LOG_ERROR("module", "Chronicle: invalid upload URL: {}", url);
         return;
@@ -873,7 +873,7 @@ void InstanceTracker::UploadAndDelete(std::string path,
 void InstanceTracker::PingRemote(std::string url, std::string secret)
 {
     ParsedUrl parsed;
-    if (!ParseUrl(url, "/azerothcore/ping", parsed))
+    if (!ParseUrl(url, "/api/v1/azerothcore/ping", parsed))
     {
         LOG_ERROR("module", "Chronicle: ping failed — invalid URL: {}", url);
         return;
