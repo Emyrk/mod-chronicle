@@ -1,6 +1,7 @@
-if(MODULES)
-    CollectSourceFiles(${CMAKE_CURRENT_SOURCE_DIR}/src PRIVATE_SOURCES)
-    target_sources(worldserver PRIVATE ${PRIVATE_SOURCES})
-    target_include_directories(worldserver PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-    target_link_libraries(worldserver PRIVATE zlib)
-endif()
+# mod-chronicle module CMake configuration.
+#
+# Source collection and include directories are handled automatically by
+# modules/CMakeLists.txt (CollectSourceFiles + CollectIncludeDirectories).
+#
+# Extra link dependencies are declared in mod-chronicle.cmake, which
+# modules/CMakeLists.txt includes automatically after processing all modules.
