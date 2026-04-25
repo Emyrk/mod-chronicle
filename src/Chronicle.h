@@ -26,12 +26,21 @@
 
 class Aura;
 class AuraApplication;
+class AuraEffect;
+class DamageInfo;
+class HealInfo;
 class Map;
 class Player;
 class Spell;
 class SpellInfo;
 class Unit;
+struct CalcDamageInfo;
+struct SpellNonMeleeDamage;
+struct SpellPeriodicAuraLogInfo;
 enum AuraRemoveMode : uint8;
+enum EnviromentalDamage;
+enum Powers;
+enum SpellMissInfo;
 
 // ---------------------------------------------------------------------------
 // EventFormatter — produces WotLK-style comma-separated combat log lines
@@ -70,16 +79,46 @@ public:
     static std::string UnitCombat(Unit* unit, Unit* victim);
 
     // --- Standard WotLK combat events ---
-    static std::string SwingDamage(Unit* attacker, Unit* victim, uint32 damage);
-    static std::string SpellDamage(Unit* attacker, Unit* victim, SpellInfo const* spell, int32 damage);
-    static std::string SpellHeal(Unit* healer, Unit* target, SpellInfo const* spell, uint32 amount);
-    static std::string UnitDied(Unit* killer, Unit* victim);
-    static std::string SpellAuraApplied(Unit* target, Aura* aura);
-    static std::string SpellAuraRemoved(Unit* target, AuraApplication* aurApp);
+
+    // Melee auto-attack with full outcome data
+    static std::string SwingDamage(CalcDamageInfo* damageInfo);
+    static std::string SwingMissed(CalcDamageInfo* damageInfo);
+
+    // Spell damage with absorb/resist/block
+    static std::string SpellDamage(SpellNonMeleeDamage* log);
+
+    // Spell miss/immune/resist/reflect
+    static std::string SpellMissed(Unit* attacker, Unit* victim, uint32 spellId,
+                                    SpellMissInfo missInfo);
+
+    // Healing with overheal and crit
+    static std::string SpellHeal(HealInfo const& healInfo, bool critical);
+
+    // Mana/rage/energy restore
+    static std::string SpellEnergize(Unit* caster, Unit* target, uint32 spellId,
+                                      uint32 amount, Powers powerType);
+
+    // Periodic ticks — damage, healing, energize
+    static std::string SpellPeriodicDamage(Unit* victim, SpellPeriodicAuraLogInfo* pInfo);
+    static std::string SpellPeriodicHeal(Unit* victim, SpellPeriodicAuraLogInfo* pInfo);
+    static std::string SpellPeriodicEnergize(Unit* victim, SpellPeriodicAuraLogInfo* pInfo);
+
+    // Damage shield (thorns etc.)
+    static std::string DamageShield(DamageInfo* damageInfo, uint32 overkill);
+
+    // Aura apply/remove with caster info
+    static std::string SpellAuraApplied(Unit* caster, Unit* target, SpellInfo const* spell);
+    static std::string SpellAuraRemoved(Unit* caster, Unit* target, SpellInfo const* spell);
+
+    // Spell cast
     static std::string SpellCastSuccess(Unit* caster, SpellInfo const* spell);
-    static std::string EnvironmentalDamage(Player* victim, uint8 envType,
-                                           uint32 damage, uint32 absorbed,
-                                           uint32 resisted);
+
+    // Death
+    static std::string UnitDied(Unit* killer, Unit* victim);
+
+    // Environmental damage
+    static std::string EnvironmentalDamage(Player* victim, EnviromentalDamage type,
+                                           uint32 damage);
 };
 
 // ---------------------------------------------------------------------------
@@ -128,16 +167,12 @@ public:
     void OnPlayerLeaveInstance(Map* map, Player* player);
     void RemoveInstance(uint32 instanceId);
 
-    // Called from UnitScript / AllSpellScript hooks — resolves unit→map→writer.
+    // Called from UnitScript / GlobalScript / PlayerScript hooks — resolves unit→map→writer.
     void WriteForUnit(Unit* unit, std::string const& line);
 
     // Emits CHRONICLE_UNIT_INFO for a unit the first time it's seen in an instance.
     // Called from combat hooks before writing damage/heal/death events.
     void EnsureUnitInfo(Unit* unit);
-
-    // Called from patched Player::EnvironmentalDamage().
-    void OnEnvironmentalDamage(Player* player, uint8 envType, uint32 damage,
-                               uint32 absorbed, uint32 resisted);
 
 private:
     InstanceTracker() = default;

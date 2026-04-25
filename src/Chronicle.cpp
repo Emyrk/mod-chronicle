@@ -15,6 +15,8 @@
 #include "Player.h"
 #include "Spell.h"
 #include "SpellInfo.h"
+#include "SpellMgr.h"
+#include "SpellAuraEffects.h"
 #include "SpellAuras.h"
 #include "World.h"
 #include "DBCStores.h"
@@ -325,111 +327,301 @@ std::string EventFormatter::UnitCombat(Unit* unit, Unit* victim)
 
 // ===== Standard WotLK Combat Events =====
 
-// ---------------------------------------------------------------------------
-// SWING_DAMAGE — melee auto-attack.
-// ---------------------------------------------------------------------------
-std::string EventFormatter::SwingDamage(Unit* attacker, Unit* victim, uint32 damage)
+// Helper: map MeleeHitOutcome to miss-type string.
+static const char* MeleeHitOutcomeToMissType(MeleeHitOutcome outcome)
 {
+    switch (outcome)
+    {
+        case MELEE_HIT_MISS:    return "MISS";
+        case MELEE_HIT_DODGE:   return "DODGE";
+        case MELEE_HIT_PARRY:   return "PARRY";
+        case MELEE_HIT_BLOCK:   return "BLOCK";
+        case MELEE_HIT_EVADE:   return "EVADE";
+        default:                return "MISS";
+    }
+}
+
+// Helper: map SpellMissInfo to miss-type string.
+static const char* SpellMissInfoToString(SpellMissInfo info)
+{
+    switch (info)
+    {
+        case SPELL_MISS_MISS:    return "MISS";
+        case SPELL_MISS_RESIST:  return "RESIST";
+        case SPELL_MISS_DODGE:   return "DODGE";
+        case SPELL_MISS_PARRY:   return "PARRY";
+        case SPELL_MISS_BLOCK:   return "BLOCK";
+        case SPELL_MISS_EVADE:   return "EVADE";
+        case SPELL_MISS_IMMUNE:
+        case SPELL_MISS_IMMUNE2: return "IMMUNE";
+        case SPELL_MISS_DEFLECT: return "DEFLECT";
+        case SPELL_MISS_ABSORB:  return "ABSORB";
+        case SPELL_MISS_REFLECT: return "REFLECT";
+        default:                 return "MISS";
+    }
+}
+
+// Helper: emit the spell prefix triple: spellId,"spellName",spellSchool(hex)
+static void AppendSpellPrefix(std::ostringstream& ss, uint32 spellId,
+                               char const* spellName, uint32 schoolMask)
+{
+    ss << "," << spellId
+       << ",\"" << (spellName ? spellName : "") << "\""
+       << ",0x" << std::hex << schoolMask << std::dec;
+}
+
+// Helper: emit damage suffix: amount,overkill,school,resisted,blocked,absorbed,critical,glancing,crushing
+static void AppendDamageSuffix(std::ostringstream& ss, uint32 amount,
+                                int32 overkill, uint32 school,
+                                uint32 resisted, uint32 blocked, uint32 absorbed,
+                                bool critical, bool glancing, bool crushing)
+{
+    ss << "," << amount
+       << "," << (overkill > 0 ? overkill : 0)
+       << "," << school
+       << "," << resisted
+       << "," << blocked
+       << "," << absorbed
+       << "," << (critical  ? "1" : "nil")
+       << "," << (glancing  ? "1" : "nil")
+       << "," << (crushing  ? "1" : "nil");
+}
+
+// ---------------------------------------------------------------------------
+// SWING_DAMAGE — melee auto-attack hit.
+// ---------------------------------------------------------------------------
+std::string EventFormatter::SwingDamage(CalcDamageInfo* damageInfo)
+{
+    Unit* attacker = damageInfo->attacker;
+    Unit* target   = damageInfo->target;
+    uint32 amount  = damageInfo->damages[0].damage;
+    int32  overkill = static_cast<int32>(amount) - static_cast<int32>(target ? target->GetHealth() : amount);
+    uint32 school   = damageInfo->damages[0].damageSchoolMask;
+    uint32 resisted = damageInfo->damages[0].resist;
+    uint32 blocked  = damageInfo->blocked_amount;
+    uint32 absorbed = damageInfo->damages[0].absorb;
+    bool   crit     = damageInfo->hitOutCome == MELEE_HIT_CRIT;
+    bool   glancing = damageInfo->hitOutCome == MELEE_HIT_GLANCING;
+    bool   crushing = damageInfo->hitOutCome == MELEE_HIT_CRUSHING;
+
     std::ostringstream ss;
     ss << Now() << "  SWING_DAMAGE,"
-       << BaseParams(attacker, victim)
-       << "," << damage
-       << ",0"              // overkill
-       << ",1"              // school (physical)
-       << ",0,0,0"          // resisted, blocked, absorbed
-       << ",nil,nil,nil";   // critical, glancing, crushing
+       << BaseParams(attacker, target);
+    AppendDamageSuffix(ss, amount, overkill, school, resisted, blocked, absorbed,
+                       crit, glancing, crushing);
     return ss.str();
 }
 
 // ---------------------------------------------------------------------------
-// SPELL_DAMAGE — spell direct damage.
+// SWING_MISSED — melee auto-attack miss/dodge/parry/etc.
 // ---------------------------------------------------------------------------
-std::string EventFormatter::SpellDamage(Unit* attacker, Unit* victim,
-                                        SpellInfo const* spell, int32 damage)
+std::string EventFormatter::SwingMissed(CalcDamageInfo* damageInfo)
+{
+    std::ostringstream ss;
+    ss << Now() << "  SWING_MISSED,"
+       << BaseParams(damageInfo->attacker, damageInfo->target)
+       << "," << MeleeHitOutcomeToMissType(damageInfo->hitOutCome)
+       << "," << (damageInfo->attackType == OFF_ATTACK ? "1" : "nil")
+       << ",0";
+    return ss.str();
+}
+
+// ---------------------------------------------------------------------------
+// SPELL_DAMAGE — spell direct damage with absorb/resist/block.
+// ---------------------------------------------------------------------------
+std::string EventFormatter::SpellDamage(SpellNonMeleeDamage* log)
 {
     std::ostringstream ss;
     ss << Now() << "  SPELL_DAMAGE,"
-       << BaseParams(attacker, victim)
-       << "," << spell->Id
-       << ",\"" << spell->SpellName[0] << "\""
-       << ",0x" << std::hex << spell->SchoolMask << std::dec
-       << "," << (damage > 0 ? damage : 0)
-       << ",0"              // overkill
-       << "," << spell->SchoolMask
-       << ",0,0,0"          // resisted, blocked, absorbed
-       << ",nil,nil,nil";   // critical, glancing, crushing
+       << BaseParams(log->attacker, log->target);
+    AppendSpellPrefix(ss, log->spellInfo->Id, log->spellInfo->SpellName[0],
+                      log->schoolMask);
+    // SpellNonMeleeDamage doesn't carry crit/glancing/crushing flags
+    AppendDamageSuffix(ss, log->damage, static_cast<int32>(log->overkill),
+                       log->schoolMask, log->resist, log->blocked, log->absorb,
+                       false, false, false);
     return ss.str();
 }
 
 // ---------------------------------------------------------------------------
-// SPELL_HEAL — healing.
+// SPELL_MISSED — spell miss/dodge/parry/immune/resist/reflect etc.
 // ---------------------------------------------------------------------------
-std::string EventFormatter::SpellHeal(Unit* healer, Unit* target,
-                                      SpellInfo const* spell, uint32 amount)
+std::string EventFormatter::SpellMissed(Unit* attacker, Unit* victim,
+                                         uint32 spellId, SpellMissInfo missInfo)
 {
+    SpellInfo const* spell = sSpellMgr->GetSpellInfo(spellId);
+
+    std::ostringstream ss;
+    ss << Now() << "  SPELL_MISSED,"
+       << BaseParams(attacker, victim);
+    AppendSpellPrefix(ss, spellId,
+                      spell ? spell->SpellName[0] : "",
+                      spell ? spell->SchoolMask : 0);
+    ss << "," << SpellMissInfoToString(missInfo)
+       << ",nil"   // isOffHand
+       << ",0";    // amountMissed
+    return ss.str();
+}
+
+// ---------------------------------------------------------------------------
+// SPELL_HEAL — healing with overheal and crit.
+// ---------------------------------------------------------------------------
+std::string EventFormatter::SpellHeal(HealInfo const& healInfo, bool critical)
+{
+    Unit* healer = healInfo.GetHealer();
+    Unit* target = healInfo.GetTarget();
+    SpellInfo const* spell = healInfo.GetSpellInfo();
+    uint32 amount      = healInfo.GetHeal();
+    uint32 overhealing = amount - healInfo.GetEffectiveHeal();
+    uint32 absorbed    = healInfo.GetAbsorb();
+
     std::ostringstream ss;
     ss << Now() << "  SPELL_HEAL,"
-       << BaseParams(healer, target)
-       << "," << spell->Id
-       << ",\"" << spell->SpellName[0] << "\""
-       << ",0x" << std::hex << spell->SchoolMask << std::dec
-       << "," << amount
-       << ",0"            // overheal
-       << ",0"            // absorbed
-       << ",nil";         // critical
+       << BaseParams(healer, target);
+    AppendSpellPrefix(ss, spell->Id, spell->SpellName[0], spell->SchoolMask);
+    ss << "," << amount
+       << "," << overhealing
+       << "," << absorbed
+       << "," << (critical ? "1" : "nil");
     return ss.str();
 }
 
 // ---------------------------------------------------------------------------
-// UNIT_DIED — a unit has died.
+// SPELL_ENERGIZE — mana/rage/energy restore.
 // ---------------------------------------------------------------------------
-std::string EventFormatter::UnitDied(Unit* killer, Unit* victim)
+std::string EventFormatter::SpellEnergize(Unit* caster, Unit* target,
+                                           uint32 spellId, uint32 amount,
+                                           Powers powerType)
 {
+    SpellInfo const* spell = sSpellMgr->GetSpellInfo(spellId);
+
     std::ostringstream ss;
-    ss << Now() << "  UNIT_DIED,"
-       << Guid(killer ? killer->GetGUID() : ObjectGuid::Empty)
-       << ",\"" << (killer ? killer->GetName() : "") << "\""
-       << ",0x0"
-       << "," << Guid(victim ? victim->GetGUID() : ObjectGuid::Empty)
-       << ",\"" << (victim ? victim->GetName() : "") << "\""
-       << ",0x0";
+    ss << Now() << "  SPELL_ENERGIZE,"
+       << BaseParams(caster, target);
+    AppendSpellPrefix(ss, spellId,
+                      spell ? spell->SpellName[0] : "",
+                      spell ? spell->SchoolMask : 0);
+    ss << "," << amount
+       << "," << static_cast<int>(powerType);
     return ss.str();
 }
 
 // ---------------------------------------------------------------------------
-// SPELL_AURA_APPLIED — aura applied.
+// SPELL_PERIODIC_DAMAGE — periodic damage tick.
 // ---------------------------------------------------------------------------
-std::string EventFormatter::SpellAuraApplied(Unit* target, Aura* aura)
+std::string EventFormatter::SpellPeriodicDamage(Unit* victim,
+                                                 SpellPeriodicAuraLogInfo* pInfo)
 {
-    SpellInfo const* spell = aura->GetSpellInfo();
+    AuraEffect const* auraEff = pInfo->auraEff;
+    Unit* caster = auraEff->GetCaster();
+    SpellInfo const* spell = auraEff->GetSpellInfo();
+
+    std::ostringstream ss;
+    ss << Now() << "  SPELL_PERIODIC_DAMAGE,"
+       << BaseParams(caster, victim);
+    AppendSpellPrefix(ss, spell->Id, spell->SpellName[0], spell->SchoolMask);
+    AppendDamageSuffix(ss, pInfo->damage, static_cast<int32>(pInfo->overDamage),
+                       spell->SchoolMask, pInfo->resist, 0, pInfo->absorb,
+                       pInfo->critical, false, false);
+    return ss.str();
+}
+
+// ---------------------------------------------------------------------------
+// SPELL_PERIODIC_HEAL — periodic heal tick.
+// ---------------------------------------------------------------------------
+std::string EventFormatter::SpellPeriodicHeal(Unit* victim,
+                                               SpellPeriodicAuraLogInfo* pInfo)
+{
+    AuraEffect const* auraEff = pInfo->auraEff;
+    Unit* caster = auraEff->GetCaster();
+    SpellInfo const* spell = auraEff->GetSpellInfo();
+
+    std::ostringstream ss;
+    ss << Now() << "  SPELL_PERIODIC_HEAL,"
+       << BaseParams(caster, victim);
+    AppendSpellPrefix(ss, spell->Id, spell->SpellName[0], spell->SchoolMask);
+    ss << "," << pInfo->damage
+       << "," << pInfo->overDamage
+       << "," << pInfo->absorb
+       << "," << (pInfo->critical ? "1" : "nil");
+    return ss.str();
+}
+
+// ---------------------------------------------------------------------------
+// SPELL_PERIODIC_ENERGIZE — periodic mana/energy tick.
+// ---------------------------------------------------------------------------
+std::string EventFormatter::SpellPeriodicEnergize(Unit* victim,
+                                                   SpellPeriodicAuraLogInfo* pInfo)
+{
+    AuraEffect const* auraEff = pInfo->auraEff;
+    Unit* caster = auraEff->GetCaster();
+    SpellInfo const* spell = auraEff->GetSpellInfo();
+
+    std::ostringstream ss;
+    ss << Now() << "  SPELL_PERIODIC_ENERGIZE,"
+       << BaseParams(caster, victim);
+    AppendSpellPrefix(ss, spell->Id, spell->SpellName[0], spell->SchoolMask);
+    // pInfo->damage is the energy amount; overDamage is meaningless here
+    ss << "," << pInfo->damage
+       << ",0";   // powerType not available in SpellPeriodicAuraLogInfo
+    return ss.str();
+}
+
+// ---------------------------------------------------------------------------
+// DAMAGE_SHIELD — thorns, retribution aura, etc.
+// ---------------------------------------------------------------------------
+std::string EventFormatter::DamageShield(DamageInfo* damageInfo, uint32 overkill)
+{
+    Unit* attacker = damageInfo->GetAttacker();
+    Unit* victim   = damageInfo->GetVictim();
+    SpellInfo const* spell = damageInfo->GetSpellInfo();
+    uint32 amount   = damageInfo->GetDamage();
+    uint32 school   = static_cast<uint32>(damageInfo->GetSchoolMask());
+    uint32 resisted = damageInfo->GetResist();
+    uint32 blocked  = damageInfo->GetBlock();
+    uint32 absorbed = damageInfo->GetAbsorb();
+
+    std::ostringstream ss;
+    ss << Now() << "  DAMAGE_SHIELD,"
+       << BaseParams(attacker, victim);
+    if (spell)
+        AppendSpellPrefix(ss, spell->Id, spell->SpellName[0], spell->SchoolMask);
+    else
+        AppendSpellPrefix(ss, 0, "", school);
+    AppendDamageSuffix(ss, amount, static_cast<int32>(overkill), school,
+                       resisted, blocked, absorbed, false, false, false);
+    return ss.str();
+}
+
+// ---------------------------------------------------------------------------
+// SPELL_AURA_APPLIED — aura applied with caster info.
+// ---------------------------------------------------------------------------
+std::string EventFormatter::SpellAuraApplied(Unit* caster, Unit* target,
+                                              SpellInfo const* spell)
+{
     bool isBuff = spell->IsPositive();
 
     std::ostringstream ss;
     ss << Now() << "  SPELL_AURA_APPLIED,"
-       << BaseParams(target, target)
-       << "," << spell->Id
-       << ",\"" << spell->SpellName[0] << "\""
-       << ",0x" << std::hex << spell->SchoolMask << std::dec
-       << "," << (isBuff ? "BUFF" : "DEBUFF");
+       << BaseParams(caster, target);
+    AppendSpellPrefix(ss, spell->Id, spell->SpellName[0], spell->SchoolMask);
+    ss << "," << (isBuff ? "BUFF" : "DEBUFF");
     return ss.str();
 }
 
 // ---------------------------------------------------------------------------
-// SPELL_AURA_REMOVED — aura removed.
+// SPELL_AURA_REMOVED — aura removed with caster info.
 // ---------------------------------------------------------------------------
-std::string EventFormatter::SpellAuraRemoved(Unit* target, AuraApplication* aurApp)
+std::string EventFormatter::SpellAuraRemoved(Unit* caster, Unit* target,
+                                              SpellInfo const* spell)
 {
-    Aura* aura = aurApp->GetBase();
-    SpellInfo const* spell = aura->GetSpellInfo();
     bool isBuff = spell->IsPositive();
 
     std::ostringstream ss;
     ss << Now() << "  SPELL_AURA_REMOVED,"
-       << BaseParams(target, target)
-       << "," << spell->Id
-       << ",\"" << spell->SpellName[0] << "\""
-       << ",0x" << std::hex << spell->SchoolMask << std::dec
-       << "," << (isBuff ? "BUFF" : "DEBUFF");
+       << BaseParams(caster, target);
+    AppendSpellPrefix(ss, spell->Id, spell->SpellName[0], spell->SchoolMask);
+    ss << "," << (isBuff ? "BUFF" : "DEBUFF");
     return ss.str();
 }
 
@@ -440,10 +632,19 @@ std::string EventFormatter::SpellCastSuccess(Unit* caster, SpellInfo const* spel
 {
     std::ostringstream ss;
     ss << Now() << "  SPELL_CAST_SUCCESS,"
-       << BaseParams(caster, caster)
-       << "," << spell->Id
-       << ",\"" << spell->SpellName[0] << "\""
-       << ",0x" << std::hex << spell->SchoolMask << std::dec;
+       << BaseParams(caster, caster);
+    AppendSpellPrefix(ss, spell->Id, spell->SpellName[0], spell->SchoolMask);
+    return ss.str();
+}
+
+// ---------------------------------------------------------------------------
+// UNIT_DIED — a unit has died.
+// ---------------------------------------------------------------------------
+std::string EventFormatter::UnitDied(Unit* killer, Unit* victim)
+{
+    std::ostringstream ss;
+    ss << Now() << "  UNIT_DIED,"
+       << BaseParams(killer, victim);
     return ss.str();
 }
 
@@ -476,25 +677,21 @@ static uint32 EnvSchool(uint8 type)
     }
 }
 
-std::string EventFormatter::EnvironmentalDamage(Player* victim, uint8 envType,
-                                                uint32 damage, uint32 absorbed,
-                                                uint32 resisted)
+std::string EventFormatter::EnvironmentalDamage(Player* victim,
+                                                EnviromentalDamage type,
+                                                uint32 damage)
 {
+    uint8 envType = static_cast<uint8>(type);
     uint32 school = EnvSchool(envType);
+
     std::ostringstream ss;
     ss << Now() << "  ENVIRONMENTAL_DAMAGE,"
        << "0x0000000000000000,\"\",0x0"   // source (environment — no unit)
        << "," << Guid(victim->GetGUID())
        << ",\"" << victim->GetName() << "\""
        << ",0x0"
-       << "," << EnvTypeToString(envType)
-       << "," << damage
-       << ",0"              // overkill
-       << "," << school
-       << "," << resisted
-       << ",0"              // blocked
-       << "," << absorbed
-       << ",nil,nil,nil";   // critical, glancing, crushing
+       << "," << EnvTypeToString(envType);
+    AppendDamageSuffix(ss, damage, 0, school, 0, 0, 0, false, false, false);
     return ss.str();
 }
 
@@ -946,13 +1143,4 @@ void InstanceTracker::WriteForUnit(Unit* unit, std::string const& line)
         return;
 
     it->second->WriteLine(line);
-}
-
-void InstanceTracker::OnEnvironmentalDamage(Player* player, uint8 envType,
-                                            uint32 damage, uint32 absorbed,
-                                            uint32 resisted)
-{
-    WriteForUnit(player, EventFormatter::EnvironmentalDamage(player, envType,
-                                                             damage, absorbed,
-                                                             resisted));
 }

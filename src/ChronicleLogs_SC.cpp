@@ -13,108 +13,222 @@
 #include "Player.h"
 #include "ScriptMgr.h"
 #include "Spell.h"
-#include "SpellInfo.h"
+#include "SpellAuraEffects.h"
 #include "SpellAuras.h"
+#include "SpellInfo.h"
 #include "Unit.h"
 
 // ===========================================================================
-// UnitScript — captures damage, healing, deaths, and aura events.
-//
-// We use specific hooks that provide SpellInfo where possible:
-//   - OnDamage:               melee auto-attack → SWING_DAMAGE
-//   - ModifySpellDamageTaken: spell damage       → SPELL_DAMAGE
-//   - ModifyHealReceived:     healing            → SPELL_HEAL
-//   - OnAuraApply/Remove:     SPELL_AURA_APPLIED / SPELL_AURA_REMOVED
-//   - OnUnitDeath:            UNIT_DIED
+// UnitScript — captures combat events at the "send to client" point,
+// providing complete damage/heal/miss data including absorb, resist,
+// block, crit, overkill, overheal, etc.
 // ===========================================================================
 class ChronicleUnitScript : public UnitScript
 {
 public:
     ChronicleUnitScript() : UnitScript("ChronicleUnitScript", true, {
-        UNITHOOK_ON_DAMAGE,
-        UNITHOOK_MODIFY_SPELL_DAMAGE_TAKEN,
-        UNITHOOK_MODIFY_HEAL_RECEIVED,
-        UNITHOOK_ON_AURA_APPLY,
-        UNITHOOK_ON_AURA_REMOVE,
+        UNITHOOK_ON_SEND_ATTACK_STATE_UPDATE,
+        UNITHOOK_ON_SEND_SPELL_NON_MELEE_DAMAGE_LOG,
+        UNITHOOK_ON_SEND_HEAL_SPELL_LOG,
+        UNITHOOK_ON_SEND_SPELL_MISS,
+        UNITHOOK_ON_SEND_SPELL_DAMAGE_IMMUNE,
+        UNITHOOK_ON_SEND_SPELL_DAMAGE_RESIST,
+        UNITHOOK_ON_SEND_SPELL_NON_MELEE_REFLECT_LOG,
+        UNITHOOK_ON_SEND_ENERGIZE_SPELL_LOG,
+        UNITHOOK_ON_SEND_PERIODIC_AURA_LOG,
+        UNITHOOK_ON_DEAL_MELEE_DAMAGE,
         UNITHOOK_ON_UNIT_DEATH,
         UNITHOOK_ON_UNIT_ENTER_EVADE_MODE,
         UNITHOOK_ON_UNIT_ENTER_COMBAT,
     }) { }
 
     // -----------------------------------------------------------------------
-    // OnDamage — fires for ALL damage (melee + spell).
-    // We use this ONLY for melee auto-attacks (SWING_DAMAGE).
-    // Spell damage is captured more accurately via ModifySpellDamageTaken.
-    //
-    // TODO: In Phase 2, use a thread-local flag set in ModifySpellDamageTaken
-    // to suppress the duplicate SWING_DAMAGE for spell damage events.
+    // OnSendAttackStateUpdate — melee hit/miss → SWING_DAMAGE or SWING_MISSED
     // -----------------------------------------------------------------------
-    void OnDamage(Unit* attacker, Unit* victim, uint32& damage) override
+    void OnSendAttackStateUpdate(CalcDamageInfo* damageInfo, int32 /*overkill*/) override
     {
-        if (!victim || !InstanceTracker::Instance().IsEnabled())
+        if (!damageInfo || !damageInfo->attacker || !InstanceTracker::Instance().IsEnabled())
+            return;
+
+        InstanceTracker::Instance().EnsureUnitInfo(damageInfo->attacker);
+        InstanceTracker::Instance().EnsureUnitInfo(damageInfo->target);
+
+        if (damageInfo->hitOutCome == MELEE_HIT_MISS ||
+            damageInfo->hitOutCome == MELEE_HIT_DODGE ||
+            damageInfo->hitOutCome == MELEE_HIT_PARRY ||
+            damageInfo->hitOutCome == MELEE_HIT_EVADE)
+        {
+            InstanceTracker::Instance().WriteForUnit(
+                damageInfo->target, EventFormatter::SwingMissed(damageInfo));
+        }
+        else
+        {
+            InstanceTracker::Instance().WriteForUnit(
+                damageInfo->target, EventFormatter::SwingDamage(damageInfo));
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // OnSendSpellNonMeleeDamageLog — spell damage → SPELL_DAMAGE
+    // -----------------------------------------------------------------------
+    void OnSendSpellNonMeleeDamageLog(SpellNonMeleeDamage* log) override
+    {
+        if (!log || !log->attacker || !InstanceTracker::Instance().IsEnabled())
+            return;
+
+        InstanceTracker::Instance().EnsureUnitInfo(log->attacker);
+        InstanceTracker::Instance().EnsureUnitInfo(log->target);
+
+        InstanceTracker::Instance().WriteForUnit(
+            log->target, EventFormatter::SpellDamage(log));
+    }
+
+    // -----------------------------------------------------------------------
+    // OnSendHealSpellLog — healing → SPELL_HEAL
+    // -----------------------------------------------------------------------
+    void OnSendHealSpellLog(HealInfo const& healInfo, bool critical) override
+    {
+        if (!healInfo.GetHealer() || !InstanceTracker::Instance().IsEnabled())
+            return;
+
+        InstanceTracker::Instance().EnsureUnitInfo(healInfo.GetHealer());
+        InstanceTracker::Instance().EnsureUnitInfo(healInfo.GetTarget());
+
+        InstanceTracker::Instance().WriteForUnit(
+            healInfo.GetTarget(), EventFormatter::SpellHeal(healInfo, critical));
+    }
+
+    // -----------------------------------------------------------------------
+    // OnSendSpellMiss — spell miss → SPELL_MISSED
+    // -----------------------------------------------------------------------
+    void OnSendSpellMiss(Unit* attacker, Unit* victim, uint32 spellID,
+                         SpellMissInfo missInfo) override
+    {
+        if (!attacker || !InstanceTracker::Instance().IsEnabled())
             return;
 
         InstanceTracker::Instance().EnsureUnitInfo(attacker);
         InstanceTracker::Instance().EnsureUnitInfo(victim);
 
         InstanceTracker::Instance().WriteForUnit(
-            victim, EventFormatter::SwingDamage(attacker, victim, damage));
+            victim, EventFormatter::SpellMissed(attacker, victim, spellID, missInfo));
     }
 
     // -----------------------------------------------------------------------
-    // ModifySpellDamageTaken — fires for spell damage with full SpellInfo.
+    // OnSendSpellDamageImmune — spell immune → SPELL_MISSED (IMMUNE)
     // -----------------------------------------------------------------------
-    void ModifySpellDamageTaken(Unit* target, Unit* attacker, int32& damage,
-                                SpellInfo const* spellInfo) override
+    void OnSendSpellDamageImmune(Unit* attacker, Unit* victim, uint32 spellId) override
     {
-        if (!target || !spellInfo || !InstanceTracker::Instance().IsEnabled())
+        if (!attacker || !InstanceTracker::Instance().IsEnabled())
             return;
 
         InstanceTracker::Instance().EnsureUnitInfo(attacker);
-        InstanceTracker::Instance().EnsureUnitInfo(target);
+        InstanceTracker::Instance().EnsureUnitInfo(victim);
 
         InstanceTracker::Instance().WriteForUnit(
-            target, EventFormatter::SpellDamage(attacker, target, spellInfo, damage));
+            victim, EventFormatter::SpellMissed(attacker, victim, spellId, SPELL_MISS_IMMUNE));
     }
 
     // -----------------------------------------------------------------------
-    // ModifyHealReceived — fires for heals with full SpellInfo.
+    // OnSendSpellDamageResist — full resist → SPELL_MISSED (RESIST)
     // -----------------------------------------------------------------------
-    void ModifyHealReceived(Unit* target, Unit* healer, uint32& heal,
-                            SpellInfo const* spellInfo) override
+    void OnSendSpellDamageResist(Unit* attacker, Unit* victim, uint32 spellId) override
     {
-        if (!target || !spellInfo || !InstanceTracker::Instance().IsEnabled())
+        if (!attacker || !InstanceTracker::Instance().IsEnabled())
             return;
 
-        InstanceTracker::Instance().EnsureUnitInfo(healer);
-        InstanceTracker::Instance().EnsureUnitInfo(target);
+        InstanceTracker::Instance().EnsureUnitInfo(attacker);
+        InstanceTracker::Instance().EnsureUnitInfo(victim);
 
         InstanceTracker::Instance().WriteForUnit(
-            target, EventFormatter::SpellHeal(healer, target, spellInfo, heal));
+            victim, EventFormatter::SpellMissed(attacker, victim, spellId, SPELL_MISS_RESIST));
     }
 
     // -----------------------------------------------------------------------
-    // OnAuraApply — aura applied → SPELL_AURA_APPLIED
+    // OnSendSpellNonMeleeReflectLog — reflected spell → SPELL_DAMAGE
     // -----------------------------------------------------------------------
-    void OnAuraApply(Unit* unit, Aura* aura) override
+    void OnSendSpellNonMeleeReflectLog(SpellNonMeleeDamage* log,
+                                        Unit* /*attacker*/) override
     {
-        if (!unit || !aura || !InstanceTracker::Instance().IsEnabled())
+        if (!log || !log->attacker || !InstanceTracker::Instance().IsEnabled())
             return;
 
+        InstanceTracker::Instance().EnsureUnitInfo(log->attacker);
+        InstanceTracker::Instance().EnsureUnitInfo(log->target);
+
         InstanceTracker::Instance().WriteForUnit(
-            unit, EventFormatter::SpellAuraApplied(unit, aura));
+            log->target, EventFormatter::SpellDamage(log));
     }
 
     // -----------------------------------------------------------------------
-    // OnAuraRemove — aura removed → SPELL_AURA_REMOVED
+    // OnSendEnergizeSpellLog — mana/rage/energy → SPELL_ENERGIZE
     // -----------------------------------------------------------------------
-    void OnAuraRemove(Unit* unit, AuraApplication* aurApp, AuraRemoveMode /*mode*/) override
+    void OnSendEnergizeSpellLog(Unit* attacker, Unit* victim, uint32 spellID,
+                                 uint32 damage, Powers powerType) override
     {
-        if (!unit || !aurApp || !InstanceTracker::Instance().IsEnabled())
+        if (!attacker || !InstanceTracker::Instance().IsEnabled())
             return;
 
+        InstanceTracker::Instance().EnsureUnitInfo(attacker);
+        InstanceTracker::Instance().EnsureUnitInfo(victim);
+
         InstanceTracker::Instance().WriteForUnit(
-            unit, EventFormatter::SpellAuraRemoved(unit, aurApp));
+            victim, EventFormatter::SpellEnergize(attacker, victim, spellID,
+                                                   damage, powerType));
+    }
+
+    // -----------------------------------------------------------------------
+    // OnSendPeriodicAuraLog — periodic tick dispatcher
+    // -----------------------------------------------------------------------
+    void OnSendPeriodicAuraLog(Unit* victim, SpellPeriodicAuraLogInfo* pInfo) override
+    {
+        if (!victim || !pInfo || !pInfo->auraEff || !InstanceTracker::Instance().IsEnabled())
+            return;
+
+        Unit* caster = pInfo->auraEff->GetCaster();
+        InstanceTracker::Instance().EnsureUnitInfo(caster);
+        InstanceTracker::Instance().EnsureUnitInfo(victim);
+
+        switch (pInfo->auraEff->GetAuraType())
+        {
+            case SPELL_AURA_PERIODIC_DAMAGE:
+            case SPELL_AURA_PERIODIC_DAMAGE_PERCENT:
+            case SPELL_AURA_PERIODIC_LEECH:
+                InstanceTracker::Instance().WriteForUnit(
+                    victim, EventFormatter::SpellPeriodicDamage(victim, pInfo));
+                break;
+            case SPELL_AURA_PERIODIC_HEAL:
+            case SPELL_AURA_OBS_MOD_HEALTH:
+                InstanceTracker::Instance().WriteForUnit(
+                    victim, EventFormatter::SpellPeriodicHeal(victim, pInfo));
+                break;
+            case SPELL_AURA_PERIODIC_ENERGIZE:
+            case SPELL_AURA_OBS_MOD_POWER:
+                InstanceTracker::Instance().WriteForUnit(
+                    victim, EventFormatter::SpellPeriodicEnergize(victim, pInfo));
+                break;
+            default:
+                break;
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // OnDealMeleeDamage — damage shield (thorns etc.) → DAMAGE_SHIELD
+    // -----------------------------------------------------------------------
+    void OnDealMeleeDamage(CalcDamageInfo* /*calcDamageInfo*/,
+                            DamageInfo* damageInfo, uint32 overkill) override
+    {
+        if (!damageInfo || !InstanceTracker::Instance().IsEnabled())
+            return;
+
+        Unit* attacker = damageInfo->GetAttacker();
+        Unit* victim   = damageInfo->GetVictim();
+
+        InstanceTracker::Instance().EnsureUnitInfo(attacker);
+        InstanceTracker::Instance().EnsureUnitInfo(victim);
+
+        InstanceTracker::Instance().WriteForUnit(
+            victim, EventFormatter::DamageShield(damageInfo, overkill));
     }
 
     // -----------------------------------------------------------------------
@@ -163,25 +277,84 @@ public:
 };
 
 // ===========================================================================
-// AllSpellScript — captures spell casts (SPELL_CAST_SUCCESS).
+// GlobalScript — captures spell casts and aura application/removal.
 // ===========================================================================
-class ChronicleAllSpellScript : public AllSpellScript
+class ChronicleGlobalScript : public GlobalScript
 {
 public:
-    ChronicleAllSpellScript() : AllSpellScript("ChronicleAllSpellScript", {
-        ALLSPELLHOOK_ON_CAST,
+    ChronicleGlobalScript() : GlobalScript("ChronicleGlobalScript", {
+        GLOBALHOOK_ON_SPELL_SEND_SPELL_GO,
+        GLOBALHOOK_ON_AURA_APPLICATION_CLIENT_UPDATE,
     }) { }
 
-    void OnSpellCast(Spell* /*spell*/, Unit* caster, SpellInfo const* spellInfo,
-                     bool /*skipCheck*/) override
+    // -----------------------------------------------------------------------
+    // OnSpellSendSpellGo — spell cast completed → SPELL_CAST_SUCCESS
+    // -----------------------------------------------------------------------
+    void OnSpellSendSpellGo(Spell* spell) override
     {
-        if (!caster || !spellInfo || !InstanceTracker::Instance().IsEnabled())
+        if (!spell || !spell->GetCaster() || !InstanceTracker::Instance().IsEnabled())
+            return;
+
+        Unit* caster = spell->GetCaster();
+        SpellInfo const* spellInfo = spell->m_spellInfo;
+        if (!spellInfo)
             return;
 
         InstanceTracker::Instance().EnsureUnitInfo(caster);
 
         InstanceTracker::Instance().WriteForUnit(
             caster, EventFormatter::SpellCastSuccess(caster, spellInfo));
+    }
+
+    // -----------------------------------------------------------------------
+    // OnAuraApplicationClientUpdate — aura applied/removed
+    // -----------------------------------------------------------------------
+    void OnAuraApplicationClientUpdate(Unit* target, Aura* aura, bool remove) override
+    {
+        if (!target || !aura || !InstanceTracker::Instance().IsEnabled())
+            return;
+
+        Unit* caster = aura->GetCaster();
+        SpellInfo const* spell = aura->GetSpellInfo();
+        if (!spell)
+            return;
+
+        InstanceTracker::Instance().EnsureUnitInfo(caster);
+        InstanceTracker::Instance().EnsureUnitInfo(target);
+
+        if (remove)
+        {
+            InstanceTracker::Instance().WriteForUnit(
+                target, EventFormatter::SpellAuraRemoved(caster, target, spell));
+        }
+        else
+        {
+            InstanceTracker::Instance().WriteForUnit(
+                target, EventFormatter::SpellAuraApplied(caster, target, spell));
+        }
+    }
+};
+
+// ===========================================================================
+// PlayerScript — captures environmental damage (fall, lava, etc.).
+// ===========================================================================
+class ChroniclePlayerScript : public PlayerScript
+{
+public:
+    ChroniclePlayerScript() : PlayerScript("ChroniclePlayerScript", {
+        PLAYERHOOK_ON_ENVIRONMENTAL_DAMAGE,
+    }) { }
+
+    void OnEnvironmentalDamage(Player* player, EnviromentalDamage type,
+                                uint32 damage) override
+    {
+        if (!player || !InstanceTracker::Instance().IsEnabled())
+            return;
+
+        InstanceTracker::Instance().EnsureUnitInfo(player);
+
+        InstanceTracker::Instance().WriteForUnit(
+            player, EventFormatter::EnvironmentalDamage(player, type, damage));
     }
 };
 
@@ -263,7 +436,8 @@ public:
 void AddChronicleScripts()
 {
     new ChronicleUnitScript();
-    new ChronicleAllSpellScript();
+    new ChronicleGlobalScript();
+    new ChroniclePlayerScript();
     new ChronicleAllMapScript();
     new ChronicleWorldScript();
 }
