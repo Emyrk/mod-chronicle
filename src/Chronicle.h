@@ -16,6 +16,8 @@
 #define MOD_CHRONICLE_H
 
 #include "ObjectGuid.h"
+#include "Player.h"        // EnviromentalDamage (unscoped enum, can't forward-declare)
+#include "SharedDefines.h" // Powers, SpellMissInfo (unscoped enums)
 #include <fstream>
 #include <memory>
 #include <mutex>
@@ -30,17 +32,12 @@ class AuraEffect;
 class DamageInfo;
 class HealInfo;
 class Map;
-class Player;
 class Spell;
 class SpellInfo;
-class Unit;
 struct CalcDamageInfo;
 struct SpellNonMeleeDamage;
 struct SpellPeriodicAuraLogInfo;
 enum AuraRemoveMode : uint8;
-enum EnviromentalDamage;
-enum Powers;
-enum SpellMissInfo;
 
 // ---------------------------------------------------------------------------
 // EventFormatter — produces WotLK-style comma-separated combat log lines
