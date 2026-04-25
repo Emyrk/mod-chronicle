@@ -794,6 +794,58 @@ void InstanceTracker::LoadConfig()
              _enabled, _logDir, _uploadURL.empty() ? "disabled" : _uploadURL);
 }
 
+void InstanceTracker::UploadOrphanedLogs()
+{
+    if (_uploadURL.empty() || _uploadSecret.empty())
+    {
+        LOG_INFO("module", "Chronicle: skipping orphaned-log sweep — upload not configured");
+        return;
+    }
+
+    // Resolve the same log directory that GetOrCreateWriter uses.
+    std::string logsDir = sConfigMgr->GetOption<std::string>("LogsDir", "");
+    std::string logPath;
+    if (logsDir.empty())
+        logPath = _logDir;
+    else
+        logPath = logsDir + "/" + _logDir;
+
+    std::error_code ec;
+    if (!std::filesystem::exists(logPath, ec) || !std::filesystem::is_directory(logPath, ec))
+    {
+        LOG_INFO("module", "Chronicle: no log directory at {} — nothing to sweep", logPath);
+        return;
+    }
+
+    uint32 count = 0;
+    for (auto const& entry : std::filesystem::directory_iterator(logPath, ec))
+    {
+        if (ec)
+            break;
+        if (!entry.is_regular_file())
+            continue;
+        auto const& p = entry.path();
+        if (p.extension() != ".log")
+            continue;
+
+        std::string filePath = p.string();
+        LOG_INFO("module", "Chronicle: uploading orphaned log {}", filePath);
+
+        // We don't have the original instanceId/mapName/realmName, so these logs will not concatenate
+        // with any existing logs on the server. But it's better than losing them entirely.
+        std::thread(&InstanceTracker::UploadAndDelete, filePath,
+                    _uploadURL, _uploadSecret,
+                    /*instanceId=*/0, /*mapName=*/std::string(""),
+                    /*realmName=*/std::string("")).detach();
+        ++count;
+    }
+
+    if (count > 0)
+        LOG_INFO("module", "Chronicle: queued {} orphaned log file(s) for upload", count);
+    else
+        LOG_INFO("module", "Chronicle: no orphaned logs found in {}", logPath);
+}
+
 CombatLogWriter* InstanceTracker::GetOrCreateWriter(Map* map)
 {
     if (!map || !map->IsDungeon())

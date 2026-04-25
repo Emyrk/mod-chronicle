@@ -163,6 +163,10 @@ public:
     std::string const& GetUploadSecret() const { return _uploadSecret; }
     static void PingRemote(std::string url, std::string secret);
 
+    // Sweep the log directory on startup and upload any leftover .log files
+    // from a previous crash or unclean shutdown.
+    void UploadOrphanedLogs();
+
     // Called from AllMapScript hooks
     void OnPlayerEnterInstance(Map* map, Player* player);
     void OnPlayerLeaveInstance(Map* map, Player* player);

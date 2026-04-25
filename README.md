@@ -8,7 +8,7 @@ Every dungeon/raid instance gets its own log file. Events are written in
 real-time as combat happens, producing files that can be uploaded directly to
 Chronicle for analysis.
 
-> **Requires custom ScriptMgr hooks.** This module depends on 15 hooks added to
+> **Requires custom ScriptMgr hooks.** This module depends on 14 hooks added to
 > the AzerothCore core that are not in mainline. See
 > [Custom Hooks](#custom-scriptmgr-hooks) below.
 
@@ -29,7 +29,7 @@ These follow the standard WotLK combat log format: `<unix_millis>  EVENT_TYPE,pa
 | `SPELL_PERIODIC_DAMAGE` | `OnSendPeriodicAuraLog` | DoT tick damage |
 | `SPELL_PERIODIC_HEAL` | `OnSendPeriodicAuraLog` | HoT tick healing |
 | `SPELL_PERIODIC_ENERGIZE` | `OnSendPeriodicAuraLog` | Periodic resource gain |
-| `DAMAGE_SHIELD` | `OnDealMeleeDamage` | Thorns/retribution aura damage |
+| `DAMAGE_SHIELD` | `OnDealDamageShieldDamage` | Thorns/retribution aura damage |
 | `SPELL_AURA_APPLIED` | `OnAuraApplicationClientUpdate` | Buff/debuff applied |
 | `SPELL_AURA_REMOVED` | `OnAuraApplicationClientUpdate` | Buff/debuff removed |
 | `SPELL_SUMMON` | `OnSpellExecuteLogSummonObject` | Unit summoned a creature or game object (pet, totem, trap, etc.) |
@@ -109,12 +109,9 @@ tail -f ./env/dist/logs/chronicle_logs/instance_*.log
 
 ## Custom ScriptMgr Hooks
 
-This module requires 15 hooks added to the AzerothCore core. These are
+This module requires 14 hooks added to the AzerothCore core. These are
 **read-only observer hooks** inserted at the server's packet-send points — they
 have zero gameplay impact.
-
-The hooks live as an uncommitted diff in the local AzerothCore working tree.
-The goal is to submit them upstream as a PR.
 
 ### UnitScript (10 hooks)
 
@@ -129,16 +126,15 @@ The goal is to submit them upstream as a PR.
 | `OnSendSpellNonMeleeReflectLog(SpellNonMeleeDamage*, Unit*)` | `Unit::SendSpellNonMeleeReflectLog()` | Spell reflect |
 | `OnSendEnergizeSpellLog(Unit*, Unit*, uint32, uint32, Powers)` | `Unit::SendEnergizeSpellLog()` | Mana/rage/energy gain |
 | `OnSendPeriodicAuraLog(Unit*, SpellPeriodicAuraLogInfo*)` | `Unit::SendPeriodicAuraLog()` | Periodic tick (DoT/HoT/energize) |
-| `OnDealMeleeDamage(CalcDamageInfo*, DamageInfo*, uint32)` | `Unit::DealDamageShieldDamage()` | Damage shield (thorns) |
+| `OnDealDamageShieldDamage(DamageInfo*, uint32, uint32)` | `Unit::DealDamageShieldDamage()` | Damage shield (thorns) |
 
-### GlobalScript (4 hooks)
+### GlobalScript (3 hooks)
 
 | Hook | Inserted At | Data |
 |------|------------|------|
 | `OnSpellSendSpellGo(Spell*)` | `Spell::SendSpellGo()` | Spell cast success at `SPELL_GO` packet |
 | `OnSpellExecuteLogSummonObject(Spell*, WorldObject*)` | `Spell::ExecuteLogEffectSummonObject()` | Summon with caster spell + summoned object |
 | `OnAuraApplicationClientUpdate(Unit*, Aura*, bool)` | `AuraApplication::ClientUpdate()` | Aura applied/removed at client notification |
-| `OnChangeUpdateData(Object*, uint16, uint64)` | `Object::SetUInt32Value()` | Object field updates (unused by module currently) |
 
 ### PlayerScript (1 hook)
 
