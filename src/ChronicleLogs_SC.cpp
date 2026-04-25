@@ -36,7 +36,7 @@ public:
         UNITHOOK_ON_SEND_SPELL_NON_MELEE_REFLECT_LOG,
         UNITHOOK_ON_SEND_ENERGIZE_SPELL_LOG,
         UNITHOOK_ON_SEND_PERIODIC_AURA_LOG,
-        UNITHOOK_ON_DEAL_MELEE_DAMAGE,
+        UNITHOOK_ON_DEAL_DAMAGE_SHIELD_DAMAGE,
         UNITHOOK_ON_UNIT_DEATH,
         UNITHOOK_ON_UNIT_ENTER_EVADE_MODE,
         UNITHOOK_ON_UNIT_ENTER_COMBAT,
@@ -213,10 +213,10 @@ public:
     }
 
     // -----------------------------------------------------------------------
-    // OnDealMeleeDamage — damage shield (thorns etc.) → DAMAGE_SHIELD
+    // OnDealDamageShieldDamage — damage shield (thorns etc.) → DAMAGE_SHIELD
     // -----------------------------------------------------------------------
-    void OnDealMeleeDamage(CalcDamageInfo* /*calcDamageInfo*/,
-                            DamageInfo* damageInfo, uint32 overkill) override
+    void OnDealDamageShieldDamage(DamageInfo* damageInfo,
+        uint32 overkill, uint32 /*spellId*/) override
     {
         if (!damageInfo || !InstanceTracker::Instance().IsEnabled())
             return;
@@ -444,6 +444,9 @@ public:
             LOG_WARN("module", "Chronicle: skipping startup ping — UploadURL or UploadSecret not configured");
             return;
         }
+
+        // Upload any orphaned logs left over from a crash / unclean shutdown.
+        tracker.UploadOrphanedLogs();
 
         // Run ping in a detached thread to avoid blocking server startup.
         std::thread(InstanceTracker::PingRemote, url, secret).detach();
