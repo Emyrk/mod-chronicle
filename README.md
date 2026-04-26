@@ -74,7 +74,11 @@ tree. AC's CMake auto-discovers any subdirectory containing `.cpp` files.
 ### 2. Apply Custom Hooks
 
 This module requires 15 custom ScriptMgr hooks patched into the AzerothCore
-core. See [Custom ScriptMgr Hooks](#custom-scriptmgr-hooks) for details.
+core. Apply the patch from
+[Emyrk/azerothcore-wotlk#2](https://github.com/Emyrk/azerothcore-wotlk/pull/2)
+to your AzerothCore source tree before building.
+
+See [Custom ScriptMgr Hooks](#custom-scriptmgr-hooks) for the full list.
 
 ### 3. Configuration
 
@@ -127,7 +131,7 @@ have zero gameplay impact.
 | `OnSendSpellNonMeleeReflectLog(SpellNonMeleeDamage*, Unit*)` | `Unit::SendSpellNonMeleeReflectLog()` | Spell reflect |
 | `OnSendEnergizeSpellLog(Unit*, Unit*, uint32, uint32, Powers)` | `Unit::SendEnergizeSpellLog()` | Mana/rage/energy gain |
 | `OnSendPeriodicAuraLog(Unit*, SpellPeriodicAuraLogInfo*)` | `Unit::SendPeriodicAuraLog()` | Periodic tick (DoT/HoT/energize) |
-| `OnDealDamageShieldDamage(DamageInfo*, uint32, uint32)` | `Unit::DealDamageShieldDamage()` | Damage shield (thorns) |
+| `OnDealDamageShieldDamage(DamageInfo*, uint32)` | `Unit::DealDamageShieldDamage()` | Damage shield (thorns) |
 | `OnDamageAbsorbed(DamageInfo&, SpellInfo const*, Unit*, uint32)` | `Unit::CalcAbsorbResist()` | Per-aura absorb attribution |
 
 ### GlobalScript (3 hooks)
@@ -147,8 +151,11 @@ have zero gameplay impact.
 
 ## Future Work
 
+See [FUTURE.md](FUTURE.md) for the full list. Highlights:
+
 - Boss encounter start/end events via `OnBeforeSetBossState`
 - Encounter credit detection via `OnAfterUpdateEncounterState`
-- `DISPEL` events
+- `SPELL_DISPEL` / `SPELL_STOLEN` / `SPELL_INTERRUPT` events
+- `LOOT` events for boss drop tracking
 - Per-target hit/miss breakdown in `SPELL_CAST_SUCCESS` (from `Spell::m_UniqueTargetInfo`)
 - Submit custom hooks as an upstream AzerothCore PR
