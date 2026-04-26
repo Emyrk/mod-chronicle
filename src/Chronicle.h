@@ -18,6 +18,7 @@
 #include "ObjectGuid.h"
 #include "Player.h"        // EnviromentalDamage (unscoped enum, can't forward-declare)
 #include "SharedDefines.h" // Powers, SpellMissInfo (unscoped enums)
+#include "DBCEnums.h"      // Difficulty
 #include <fstream>
 #include <memory>
 #include <mutex>
@@ -39,6 +40,9 @@ struct CalcDamageInfo;
 struct SpellNonMeleeDamage;
 struct SpellPeriodicAuraLogInfo;
 enum AuraRemoveMode : uint8;
+enum EncounterCreditType : uint8;
+enum EncounterState : uint8;
+struct DungeonEncounter;
 
 // ---------------------------------------------------------------------------
 // EventFormatter — produces WotLK-style comma-separated combat log lines
@@ -127,6 +131,15 @@ public:
     // Environmental damage
     static std::string EnvironmentalDamage(Player* victim, EnviromentalDamage type,
                                            uint32 damage);
+
+    // --- Encounter events ---
+    static std::string EncounterStart(uint32 bossId, Map* instance);
+    static std::string EncounterEnd(uint32 bossId, Map* instance, bool success);
+    static std::string EncounterCredit(
+        Map* map, EncounterCreditType type, uint32 creditEntry,
+        Unit* source, Difficulty difficulty,
+        uint32 encounterDbcId, std::string const& encounterName,
+        uint32 dungeonCompleted);
 };
 
 // ---------------------------------------------------------------------------
@@ -181,6 +194,12 @@ public:
 
     // Called from UnitScript / GlobalScript / PlayerScript hooks — resolves unit→map→writer.
     void WriteForUnit(Unit* unit, std::string const& line);
+
+    // Write directly to a known instance (used by hooks that provide Map* but no Unit*).
+    void WriteForInstance(uint32 instanceId, std::string const& line);
+
+    // Flush the log file for a given instance to disk (e.g. after boss kill).
+    void FlushInstance(uint32 instanceId);
 
     // Emits CHRONICLE_UNIT_INFO for a unit the first time it's seen in an instance.
     // Called from combat hooks before writing damage/heal/death events.

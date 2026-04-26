@@ -51,6 +51,9 @@ the standard combat log.
 | `CHRONICLE_UNIT_INFO` | Unit metadata, emitted first time a GUID appears in combat |
 | `CHRONICLE_UNIT_EVADE` | Creature entered evade mode |
 | `CHRONICLE_UNIT_COMBAT` | Unit entered combat with a target |
+| `CHRONICLE_ENCOUNTER_START` | Boss encounter pulled (bossIndex, mapId, instanceId) |
+| `CHRONICLE_ENCOUNTER_END` | Boss encounter ended — kill or wipe (bossIndex, mapId, instanceId, success) |
+| `CHRONICLE_ENCOUNTER_CREDIT` | Boss kill credit with DBC encounter name, difficulty, completion bitmask |
 
 ### Data Fidelity
 
@@ -134,13 +137,15 @@ have zero gameplay impact.
 | `OnDealDamageShieldDamage(DamageInfo*, uint32)` | `Unit::DealDamageShieldDamage()` | Damage shield (thorns) |
 | `OnDamageAbsorbed(DamageInfo&, SpellInfo const*, Unit*, uint32)` | `Unit::CalcAbsorbResist()` | Per-aura absorb attribution |
 
-### GlobalScript (3 hooks)
+### GlobalScript (3 custom hooks + 2 mainline hooks)
 
 | Hook | Inserted At | Data |
 |------|------------|------|
 | `OnSpellSendSpellGo(Spell*)` | `Spell::SendSpellGo()` | Spell cast success at `SPELL_GO` packet |
 | `OnSpellExecuteLogSummonObject(Spell*, WorldObject*)` | `Spell::ExecuteLogEffectSummonObject()` | Summon with caster spell + summoned object |
 | `OnAuraApplicationClientUpdate(Unit*, Aura*, bool)` | `AuraApplication::ClientUpdate()` | Aura applied/removed at client notification |
+| `OnBeforeSetBossState(...)` *(mainline)* | `InstanceScript::SetBossState()` | Boss encounter state transition (pull/kill/wipe) |
+| `OnAfterUpdateEncounterState(...)` *(mainline)* | `Map::UpdateEncounterState()` | Encounter credit with DBC boss names, difficulty, completion mask |
 
 ### PlayerScript (1 hook)
 
@@ -153,8 +158,6 @@ have zero gameplay impact.
 
 See [FUTURE.md](FUTURE.md) for the full list. Highlights:
 
-- Boss encounter start/end events via `OnBeforeSetBossState`
-- Encounter credit detection via `OnAfterUpdateEncounterState`
 - `SPELL_DISPEL` / `SPELL_STOLEN` / `SPELL_INTERRUPT` events
 - `LOOT` events for boss drop tracking
 - Per-target hit/miss breakdown in `SPELL_CAST_SUCCESS` (from `Spell::m_UniqueTargetInfo`)

@@ -17,6 +17,8 @@
 #include "SpellAuras.h"
 #include "SpellInfo.h"
 #include "Unit.h"
+#include "InstanceScript.h" // EncounterState
+#include "ObjectMgr.h"      // DungeonEncounter, DungeonEncounterList
 
 // ===========================================================================
 // UnitScript — captures combat events at the "send to client" point,
@@ -343,6 +345,8 @@ public:
         GLOBALHOOK_ON_SPELL_SEND_SPELL_GO,
         GLOBALHOOK_ON_AURA_APPLICATION_CLIENT_UPDATE,
         GLOBALHOOK_ON_SPELL_EXECUTE_LOG_SUMMON_OBJECT,
+        GLOBALHOOK_ON_BEFORE_SET_BOSS_STATE,
+        GLOBALHOOK_ON_AFTER_UPDATE_ENCOUNTER_STATE,
     }) { }
 
     // -----------------------------------------------------------------------
@@ -409,6 +413,72 @@ public:
             InstanceTracker::Instance().WriteForUnit(
                 target, EventFormatter::SpellAuraApplied(caster, target, spell));
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // OnBeforeSetBossState — encounter pull / kill / wipe
+    // -----------------------------------------------------------------------
+    void OnBeforeSetBossState(uint32 id, EncounterState newState,
+                              EncounterState oldState, Map* instance) override
+    {
+        if (!instance || !InstanceTracker::Instance().IsEnabled())
+            return;
+
+        uint32 instanceId = instance->GetInstanceId();
+
+        if (newState == IN_PROGRESS && oldState != IN_PROGRESS)
+        {
+            InstanceTracker::Instance().WriteForInstance(instanceId,
+                EventFormatter::EncounterStart(id, instance));
+        }
+        else if (oldState == IN_PROGRESS && newState == DONE)
+        {
+            InstanceTracker::Instance().WriteForInstance(instanceId,
+                EventFormatter::EncounterEnd(id, instance, /*success=*/true));
+            InstanceTracker::Instance().FlushInstance(instanceId);
+        }
+        else if (oldState == IN_PROGRESS && newState == FAIL)
+        {
+            InstanceTracker::Instance().WriteForInstance(instanceId,
+                EventFormatter::EncounterEnd(id, instance, /*success=*/false));
+            InstanceTracker::Instance().FlushInstance(instanceId);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // OnAfterUpdateEncounterState — rich encounter credit with DBC names
+    // -----------------------------------------------------------------------
+    void OnAfterUpdateEncounterState(Map* map, EncounterCreditType type,
+        uint32 creditEntry, Unit* source, Difficulty difficulty,
+        DungeonEncounterList const* encounters, uint32 dungeonCompleted,
+        bool updated) override
+    {
+        if (!map || !updated || !InstanceTracker::Instance().IsEnabled())
+            return;
+
+        uint32 instanceId = map->GetInstanceId();
+
+        // Find the encounter that matches this creditEntry
+        std::string encounterName;
+        uint32 encounterDbcId = 0;
+        if (encounters)
+        {
+            for (auto const* enc : *encounters)
+            {
+                if (enc->creditType == type && enc->creditEntry == creditEntry)
+                {
+                    encounterName = enc->dbcEntry->encounterName[0]; // English
+                    encounterDbcId = enc->dbcEntry->id;
+                    break;
+                }
+            }
+        }
+
+        InstanceTracker::Instance().WriteForInstance(instanceId,
+            EventFormatter::EncounterCredit(
+                map, type, creditEntry, source, difficulty,
+                encounterDbcId, encounterName, dungeonCompleted));
+        InstanceTracker::Instance().FlushInstance(instanceId);
     }
 };
 

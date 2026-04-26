@@ -751,6 +751,45 @@ std::string EventFormatter::EnvironmentalDamage(Player* victim,
     return ss.str();
 }
 
+// --- Encounter events ---
+
+std::string EventFormatter::EncounterStart(uint32 bossId, Map* instance)
+{
+    std::ostringstream ss;
+    ss << Now() << "  CHRONICLE_ENCOUNTER_START,"
+       << bossId << "," << instance->GetId() << "," << instance->GetInstanceId();
+    return ss.str();
+}
+
+std::string EventFormatter::EncounterEnd(uint32 bossId, Map* instance, bool success)
+{
+    std::ostringstream ss;
+    ss << Now() << "  CHRONICLE_ENCOUNTER_END,"
+       << bossId << "," << instance->GetId() << "," << instance->GetInstanceId()
+       << "," << (success ? 1 : 0);
+    return ss.str();
+}
+
+std::string EventFormatter::EncounterCredit(
+    Map* map, EncounterCreditType type, uint32 creditEntry,
+    Unit* source, Difficulty difficulty,
+    uint32 encounterDbcId, std::string const& encounterName,
+    uint32 dungeonCompleted)
+{
+    std::ostringstream ss;
+    ss << Now() << "  CHRONICLE_ENCOUNTER_CREDIT,"
+       << map->GetId() << "," << map->GetInstanceId() << ","
+       << static_cast<uint32>(type) << "," << creditEntry << ","
+       << static_cast<uint32>(difficulty) << ","
+       << encounterDbcId << ",\"" << encounterName << "\","
+       << dungeonCompleted;
+
+    if (source)
+        ss << "," << Guid(source->GetGUID()) << ",\"" << source->GetName() << "\"";
+
+    return ss.str();
+}
+
 // ===== CombatLogWriter =====
 
 CombatLogWriter::CombatLogWriter(std::string const& dir, uint32 mapId, uint32 instanceId,
@@ -1251,4 +1290,23 @@ void InstanceTracker::WriteForUnit(Unit* unit, std::string const& line)
         return;
 
     it->second->WriteLine(line);
+}
+
+void InstanceTracker::WriteForInstance(uint32 instanceId, std::string const& line)
+{
+    if (!_enabled)
+        return;
+
+    std::lock_guard<std::mutex> lock(_mutex);
+    auto it = _writers.find(instanceId);
+    if (it != _writers.end())
+        it->second->WriteLine(line);
+}
+
+void InstanceTracker::FlushInstance(uint32 instanceId)
+{
+    std::lock_guard<std::mutex> lock(_mutex);
+    auto it = _writers.find(instanceId);
+    if (it != _writers.end())
+        it->second->Flush();
 }

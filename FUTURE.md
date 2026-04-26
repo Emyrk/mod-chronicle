@@ -4,20 +4,6 @@
 
 These hooks exist in **current mainline AzerothCore** and require no core patches.
 
-### Boss Encounter Events (high priority)
-
-**`OnBeforeSetBossState(uint32 id, EncounterState newState, EncounterState oldState, Map* instance)`**
-
-Fires whenever a boss encounter transitions state (NOT_STARTED → IN_PROGRESS → DONE/FAIL).
-Would emit `ENCOUNTER_START` / `ENCOUNTER_END` events — more reliable than
-Chronicle's current approach of matching mob GUIDs against a creature database.
-
-**`OnAfterUpdateEncounterState(Map* map, EncounterCreditType type, uint32 creditEntry, ...)`**
-
-Fires after encounter credit is processed. Provides `DungeonEncounterList` with
-official encounter names from DBC. Would enable `ENCOUNTER_CREDIT` events and
-dungeon completion detection.
-
 **`OnInstanceIdRemoved(uint32 instanceId)`**
 
 Safety net for log cleanup — fires when an instance save is removed from the database.
