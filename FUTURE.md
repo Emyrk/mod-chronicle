@@ -73,6 +73,16 @@ Safety net for log cleanup — fires when an instance save is removed from the d
 - **SpawnId for creatures** — use `GetSpawnId()` for stable creature identity
   across respawns
 
+## Account Linking
+
+- **Realm character → Chronicle account linking** — allow players to claim
+  their in-game characters on Chronicle. The module could emit a
+  `CHRONICLE_ACCOUNT_INFO` event containing the player's game account ID
+  (or a hash). Chronicle would then let users prove ownership (e.g. via an
+  in-game chat command that generates a one-time code) and link the realm
+  character to their Chronicle account. This enables per-player dashboards,
+  personal log history, and privacy controls.
+
 ## Upstream Contribution
 
 The 15 custom ScriptMgr hooks should be submitted as an AzerothCore PR.
