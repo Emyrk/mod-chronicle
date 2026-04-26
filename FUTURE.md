@@ -24,7 +24,22 @@ Safety net for log cleanup — fires when an instance save is removed from the d
 
 ## Event Improvements
 
-- **`DISPEL` events** — not yet tracked
+- **`SPELL_DISPEL` / `SPELL_STOLEN` events** — not yet tracked. Core has
+  `Spell::EffectDispel` and `Spell::EffectStealBeneficialBuff` which know the
+  removed aura (spell ID, charges, etc.) and the dispeller. Need a new hook
+  (or use `OnSpellSendSpellGo` + effect type filtering) to emit
+  `SPELL_DISPEL` (hostile dispel), `SPELL_DISPEL_FAILED` (resist), and
+  `SPELL_STOLEN` (Spellsteal). Data: caster, target, dispel spell, removed
+  aura spell ID, removed aura school.
+- **`SPELL_INTERRUPT` events** — not yet tracked. Core has
+  `Spell::EffectInterruptCast` which interrupts a target's current cast and
+  locks out the spell school. Need a hook to emit `SPELL_INTERRUPT` with:
+  caster, target, interrupt spell, interrupted spell ID. Useful for tracking
+  kick/counterspell/pummel success rates.
+- **`LOOT` events** — not yet tracked. Core has `Player::SendLoot` and
+  `LootItem` / `Loot` structures with item ID, count, and recipient.
+  Would enable tracking boss loot drops per kill for historical loot tables
+  and GP/DKP integration.
 - **Per-target hit/miss in `SPELL_CAST_SUCCESS`** — `Spell::m_UniqueTargetInfo` has
   per-target miss results, but `OnSpellSendSpellGo` only gives us the `Spell*`; need
   to extract and format the target list
