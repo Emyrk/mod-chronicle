@@ -248,7 +248,7 @@ public:
     // OnDealDamageShieldDamage — damage shield (thorns etc.) → DAMAGE_SHIELD
     // -----------------------------------------------------------------------
     void OnDealDamageShieldDamage(DamageInfo* damageInfo,
-        uint32 overkill, uint32 /*spellId*/) override
+        uint32 overkill) override
     {
         if (!damageInfo || !InstanceTracker::Instance().IsEnabled())
             return;
