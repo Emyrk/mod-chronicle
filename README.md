@@ -118,7 +118,7 @@ have zero gameplay impact.
 | Hook | Inserted At | Data |
 |------|------------|------|
 | `OnSendAttackStateUpdate(CalcDamageInfo*, int32)` | `Unit::SendAttackStateUpdate()` | Full melee hit/miss with all mitigation |
-| `OnSendSpellNonMeleeDamageLog(SpellNonMeleeDamage*)` | `Unit::SendSpellNonMeleeDamageLog()` | Full spell damage with all mitigation |
+| `OnSendSpellNonMeleeDamageLog(SpellNonMeleeDamage*, int32)` | `Unit::SendSpellNonMeleeDamageLog()` | Full spell damage with all mitigation |
 | `OnSendHealSpellLog(HealInfo const&, bool)` | `Unit::SendHealSpellLog()` | Heal amount, overheal, absorb, crit |
 | `OnSendSpellMiss(Unit*, Unit*, uint32, SpellMissInfo)` | `Unit::SendSpellMiss()` | Spell miss with miss type |
 | `OnSendSpellDamageImmune(Unit*, Unit*, uint32)` | `Unit::SendSpellDamageImmune()` | Spell immunity |

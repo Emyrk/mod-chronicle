@@ -429,17 +429,19 @@ std::string EventFormatter::SwingMissed(CalcDamageInfo* damageInfo)
 // ---------------------------------------------------------------------------
 // SPELL_DAMAGE — spell direct damage with absorb/resist/block.
 // ---------------------------------------------------------------------------
-std::string EventFormatter::SpellDamage(SpellNonMeleeDamage* log)
+std::string EventFormatter::SpellDamage(SpellNonMeleeDamage* log, int32 overkill)
 {
+    bool critical = (log->HitInfo & SPELL_HIT_TYPE_CRIT) != 0;
+
     std::ostringstream ss;
     ss << Now() << "  SPELL_DAMAGE,"
        << BaseParams(log->attacker, log->target);
     AppendSpellPrefix(ss, log->spellInfo->Id, log->spellInfo->SpellName[0],
                       log->schoolMask);
-    // SpellNonMeleeDamage doesn't carry crit/glancing/crushing flags
-    AppendDamageSuffix(ss, log->damage, static_cast<int32>(log->overkill),
+    // Glancing and crushing don't apply to spells — always false.
+    AppendDamageSuffix(ss, log->damage, overkill,
                        log->schoolMask, log->resist, log->blocked, log->absorb,
-                       false, false, false);
+                       critical, false, false);
     return ss.str();
 }
 

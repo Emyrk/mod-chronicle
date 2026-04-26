@@ -28,9 +28,6 @@ Safety net for log cleanup — fires when an instance save is removed from the d
 - **Per-target hit/miss in `SPELL_CAST_SUCCESS`** — `Spell::m_UniqueTargetInfo` has
   per-target miss results, but `OnSpellSendSpellGo` only gives us the `Spell*`; need
   to extract and format the target list
-- **`SpellNonMeleeDamage` crit flag** — the struct doesn't carry a crit flag, so
-  `SPELL_DAMAGE` currently emits `nil` for critical. May need a separate hook or
-  struct extension.
 - **`SpellPeriodicEnergize` power type** — `SpellPeriodicAuraLogInfo` doesn't carry
   the power type, so we emit `0`. Could be derived from the aura effect.
 

@@ -86,7 +86,7 @@ public:
     static std::string SwingMissed(CalcDamageInfo* damageInfo);
 
     // Spell damage with absorb/resist/block
-    static std::string SpellDamage(SpellNonMeleeDamage* log);
+    static std::string SpellDamage(SpellNonMeleeDamage* log, int32 overkill);
 
     // Spell miss/immune/resist/reflect
     static std::string SpellMissed(Unit* attacker, Unit* victim, uint32 spellId,

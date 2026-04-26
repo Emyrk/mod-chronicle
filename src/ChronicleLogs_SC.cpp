@@ -64,16 +64,21 @@ public:
         }
 
         // Emit one SWING_DAMAGE per non-zero damage slot (weapons can
-        // have two damage types, e.g. physical + fire).  Overkill is
-        // distributed sequentially: slot 0 eats into HP first, its
-        // excess is overkill, and everything left spills to slot 1.
+        // have two damage types, e.g. physical + fire).
+        //
+        // Effective damage is taken off slot 0 first, then slot 1.
+        //  d0 = 100
+        //  d1 = 50
+        //  overkill = 120
+        //  → slot1ok = min(120, 50) = 50
+        //  → slot0ok = 120 - 50 = 70
         bool hasSlot1 = damageInfo->damages[1].damage
                      || damageInfo->damages[1].absorb
                      || damageInfo->damages[1].resist;
 
         // Overkill peels off slot 1 (last applied) first, then slot 0.
-        int32 d2 = static_cast<int32>(damageInfo->damages[1].damage);
-        int32 slot1ok = hasSlot1 ? std::min(overkill, d2) : 0;
+        int32 d1 = static_cast<int32>(damageInfo->damages[1].damage);
+        int32 slot1ok = hasSlot1 ? std::min(overkill, d1) : 0;
         int32 slot0ok = overkill - slot1ok;
 
         InstanceTracker::Instance().WriteForUnit(
@@ -91,7 +96,8 @@ public:
     // -----------------------------------------------------------------------
     // OnSendSpellNonMeleeDamageLog — spell damage → SPELL_DAMAGE
     // -----------------------------------------------------------------------
-    void OnSendSpellNonMeleeDamageLog(SpellNonMeleeDamage* log) override
+    void OnSendSpellNonMeleeDamageLog(SpellNonMeleeDamage* log,
+                                       int32 overkill) override
     {
         if (!log || !log->attacker || !InstanceTracker::Instance().IsEnabled())
             return;
@@ -100,7 +106,7 @@ public:
         InstanceTracker::Instance().EnsureUnitInfo(log->target);
 
         InstanceTracker::Instance().WriteForUnit(
-            log->target, EventFormatter::SpellDamage(log));
+            log->target, EventFormatter::SpellDamage(log, overkill));
     }
 
     // -----------------------------------------------------------------------
@@ -176,8 +182,13 @@ public:
         InstanceTracker::Instance().EnsureUnitInfo(log->attacker);
         InstanceTracker::Instance().EnsureUnitInfo(log->target);
 
+        // Overkill must be computed here — the reflect hook does not
+        // receive it from the core (only OnSendSpellNonMeleeDamageLog does).
+        int32 reflectOverkill = static_cast<int32>(log->damage)
+                              - static_cast<int32>(log->target->GetHealth());
         InstanceTracker::Instance().WriteForUnit(
-            log->target, EventFormatter::SpellDamage(log));
+            log->target, EventFormatter::SpellDamage(
+                log, reflectOverkill < 0 ? 0 : reflectOverkill));
     }
 
     // -----------------------------------------------------------------------
