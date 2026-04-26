@@ -107,6 +107,10 @@ public:
     // Damage shield (thorns etc.)
     static std::string DamageShield(DamageInfo* damageInfo, uint32 overkill);
 
+    // Absorb aura soaked damage (PW:S, Mana Shield, etc.)
+    static std::string SpellAbsorbed(DamageInfo& dmgInfo,
+        SpellInfo const* absorbSpell, Unit* absorbCaster, uint32 absorbAmount);
+
     // Aura apply/remove with caster info
     static std::string SpellAuraApplied(Unit* caster, Unit* target, SpellInfo const* spell);
     static std::string SpellAuraRemoved(Unit* caster, Unit* target, SpellInfo const* spell);

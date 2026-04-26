@@ -8,7 +8,7 @@ Every dungeon/raid instance gets its own log file. Events are written in
 real-time as combat happens, producing files that can be uploaded directly to
 Chronicle for analysis.
 
-> **Requires custom ScriptMgr hooks.** This module depends on 14 hooks added to
+> **Requires custom ScriptMgr hooks.** This module depends on 15 hooks added to
 > the AzerothCore core that are not in mainline. See
 > [Custom Hooks](#custom-scriptmgr-hooks) below.
 
@@ -30,6 +30,7 @@ These follow the standard WotLK combat log format: `<unix_millis>  EVENT_TYPE,pa
 | `SPELL_PERIODIC_HEAL` | `OnSendPeriodicAuraLog` | HoT tick healing |
 | `SPELL_PERIODIC_ENERGIZE` | `OnSendPeriodicAuraLog` | Periodic resource gain |
 | `DAMAGE_SHIELD` | `OnDealDamageShieldDamage` | Thorns/retribution aura damage |
+| `SPELL_ABSORBED` | `OnDamageAbsorbed` | Per-aura absorb (PW:S, Mana Shield, etc.) with spell attribution |
 | `SPELL_AURA_APPLIED` | `OnAuraApplicationClientUpdate` | Buff/debuff applied |
 | `SPELL_AURA_REMOVED` | `OnAuraApplicationClientUpdate` | Buff/debuff removed |
 | `SPELL_SUMMON` | `OnSpellExecuteLogSummonObject` | Unit summoned a creature or game object (pet, totem, trap, etc.) |
@@ -72,7 +73,7 @@ tree. AC's CMake auto-discovers any subdirectory containing `.cpp` files.
 
 ### 2. Apply Custom Hooks
 
-This module requires 14 custom ScriptMgr hooks patched into the AzerothCore
+This module requires 15 custom ScriptMgr hooks patched into the AzerothCore
 core. See [Custom ScriptMgr Hooks](#custom-scriptmgr-hooks) for details.
 
 ### 3. Configuration
@@ -109,11 +110,11 @@ tail -f ./env/dist/logs/chronicle_logs/instance_*.log
 
 ## Custom ScriptMgr Hooks
 
-This module requires 14 hooks added to the AzerothCore core. These are
+This module requires 15 hooks added to the AzerothCore core. These are
 **read-only observer hooks** inserted at the server's packet-send points — they
 have zero gameplay impact.
 
-### UnitScript (10 hooks)
+### UnitScript (11 hooks)
 
 | Hook | Inserted At | Data |
 |------|------------|------|
@@ -127,6 +128,7 @@ have zero gameplay impact.
 | `OnSendEnergizeSpellLog(Unit*, Unit*, uint32, uint32, Powers)` | `Unit::SendEnergizeSpellLog()` | Mana/rage/energy gain |
 | `OnSendPeriodicAuraLog(Unit*, SpellPeriodicAuraLogInfo*)` | `Unit::SendPeriodicAuraLog()` | Periodic tick (DoT/HoT/energize) |
 | `OnDealDamageShieldDamage(DamageInfo*, uint32, uint32)` | `Unit::DealDamageShieldDamage()` | Damage shield (thorns) |
+| `OnDamageAbsorbed(DamageInfo&, SpellInfo const*, Unit*, uint32)` | `Unit::CalcAbsorbResist()` | Per-aura absorb attribution |
 
 ### GlobalScript (3 hooks)
 

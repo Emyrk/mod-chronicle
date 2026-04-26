@@ -596,6 +596,41 @@ std::string EventFormatter::DamageShield(DamageInfo* damageInfo, uint32 overkill
 }
 
 // ---------------------------------------------------------------------------
+// SPELL_ABSORBED — per-aura absorb attribution (PW:S, Mana Shield, etc.).
+//
+// Two variants matching the WoW combat log convention:
+//   Melee:  SPELL_ABSORBED,<src>,<dst>,<absorbCaster>,<absorbSpell>,<amount>
+//   Spell:  SPELL_ABSORBED,<src>,<dst>,<dmgSpell>,<absorbCaster>,<absorbSpell>,<amount>
+// ---------------------------------------------------------------------------
+std::string EventFormatter::SpellAbsorbed(DamageInfo& dmgInfo,
+    SpellInfo const* absorbSpell, Unit* absorbCaster, uint32 absorbAmount)
+{
+    std::ostringstream ss;
+    ss << Now() << "  SPELL_ABSORBED,"
+       << BaseParams(dmgInfo.GetAttacker(), dmgInfo.GetVictim());
+
+    // If damage was from a spell, emit the damage spell prefix.
+    SpellInfo const* dmgSpell = dmgInfo.GetSpellInfo();
+    if (dmgSpell)
+        AppendSpellPrefix(ss, dmgSpell->Id, dmgSpell->SpellName[0],
+                          dmgSpell->SchoolMask);
+
+    // Absorb caster (3 fields: GUID, name, flags).
+    ss << "," << Guid(absorbCaster ? absorbCaster->GetGUID() : ObjectGuid::Empty)
+       << ",\"" << (absorbCaster ? absorbCaster->GetName() : "") << "\""
+       << ",0x" << std::hex << UnitFlags(absorbCaster) << std::dec;
+
+    // Absorb spell (id, name, school).
+    AppendSpellPrefix(ss, absorbSpell->Id, absorbSpell->SpellName[0],
+                      absorbSpell->SchoolMask);
+
+    // Amount absorbed by this aura.
+    ss << "," << absorbAmount;
+
+    return ss.str();
+}
+
+// ---------------------------------------------------------------------------
 // SPELL_AURA_APPLIED — aura applied with caster info.
 // ---------------------------------------------------------------------------
 std::string EventFormatter::SpellAuraApplied(Unit* caster, Unit* target,

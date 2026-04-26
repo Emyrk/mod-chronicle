@@ -37,6 +37,7 @@ public:
         UNITHOOK_ON_SEND_ENERGIZE_SPELL_LOG,
         UNITHOOK_ON_SEND_PERIODIC_AURA_LOG,
         UNITHOOK_ON_DEAL_DAMAGE_SHIELD_DAMAGE,
+        UNITHOOK_ON_DAMAGE_ABSORBED,
         UNITHOOK_ON_UNIT_DEATH,
         UNITHOOK_ON_UNIT_ENTER_EVADE_MODE,
         UNITHOOK_ON_UNIT_ENTER_COMBAT,
@@ -289,6 +290,31 @@ public:
 
         InstanceTracker::Instance().WriteForUnit(
             unit, EventFormatter::UnitEvade(unit, evadeReason));
+    }
+
+    // -----------------------------------------------------------------------
+    // OnDamageAbsorbed — absorb aura soaked damage → SPELL_ABSORBED
+    // -----------------------------------------------------------------------
+    void OnDamageAbsorbed(DamageInfo& dmgInfo, SpellInfo const* absorbSpellInfo,
+                           Unit* absorbCaster, uint32 absorbAmount) override
+    {
+        if (!absorbSpellInfo || !absorbAmount ||
+            !InstanceTracker::Instance().IsEnabled())
+            return;
+
+        Unit* attacker = dmgInfo.GetAttacker();
+        Unit* victim   = dmgInfo.GetVictim();
+
+        if (attacker)
+            InstanceTracker::Instance().EnsureUnitInfo(attacker);
+        if (victim)
+            InstanceTracker::Instance().EnsureUnitInfo(victim);
+        if (absorbCaster)
+            InstanceTracker::Instance().EnsureUnitInfo(absorbCaster);
+
+        InstanceTracker::Instance().WriteForUnit(
+            victim, EventFormatter::SpellAbsorbed(
+                dmgInfo, absorbSpellInfo, absorbCaster, absorbAmount));
     }
 
     // -----------------------------------------------------------------------
