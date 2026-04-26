@@ -751,6 +751,25 @@ std::string EventFormatter::EnvironmentalDamage(Player* victim,
     return ss.str();
 }
 
+std::string EventFormatter::SpellInterrupt(Unit* interrupter, Unit* interrupted,
+                                           uint32 interruptSpellId, uint32 interruptedSpellId)
+{
+    SpellInfo const* intSpell = sSpellMgr->GetSpellInfo(interruptSpellId);
+    SpellInfo const* victimSpell = sSpellMgr->GetSpellInfo(interruptedSpellId);
+
+    std::ostringstream ss;
+    ss << Now() << "  SPELL_INTERRUPT,"
+       << BaseParams(interrupter, interrupted)
+       << "," << interruptSpellId
+       << ",\"" << (intSpell ? intSpell->SpellName[0] : "") << "\""
+       << ",0x" << std::hex << (intSpell ? static_cast<uint32>(intSpell->SchoolMask) : 0u)
+       << std::dec
+       << "," << interruptedSpellId
+       << ",\"" << (victimSpell ? victimSpell->SpellName[0] : "") << "\""
+       << ",0x" << std::hex << (victimSpell ? static_cast<uint32>(victimSpell->SchoolMask) : 0u);
+    return ss.str();
+}
+
 // --- Encounter events ---
 
 std::string EventFormatter::EncounterStart(uint32 bossId, Map* instance)

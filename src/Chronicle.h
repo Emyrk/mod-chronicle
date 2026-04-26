@@ -132,6 +132,10 @@ public:
     static std::string EnvironmentalDamage(Player* victim, EnviromentalDamage type,
                                            uint32 damage);
 
+    // Spell interrupt (Kick, Counterspell, Pummel, etc.)
+    static std::string SpellInterrupt(Unit* interrupter, Unit* interrupted,
+                                      uint32 interruptSpellId, uint32 interruptedSpellId);
+
     // --- Encounter events ---
     static std::string EncounterStart(uint32 bossId, Map* instance);
     static std::string EncounterEnd(uint32 bossId, Map* instance, bool success);

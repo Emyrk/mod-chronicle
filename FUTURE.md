@@ -17,11 +17,9 @@ Safety net for log cleanup — fires when an instance save is removed from the d
   `SPELL_DISPEL` (hostile dispel), `SPELL_DISPEL_FAILED` (resist), and
   `SPELL_STOLEN` (Spellsteal). Data: caster, target, dispel spell, removed
   aura spell ID, removed aura school.
-- **`SPELL_INTERRUPT` events** — not yet tracked. Core has
-  `Spell::EffectInterruptCast` which interrupts a target's current cast and
-  locks out the spell school. Need a hook to emit `SPELL_INTERRUPT` with:
-  caster, target, interrupt spell, interrupted spell ID. Useful for tracking
-  kick/counterspell/pummel success rates.
+- **Silence-based interrupts** (e.g. Silencing Shot) — these don't go through
+  `EffectInterruptCast`, they use `SPELL_AURA_MOD_SILENCE`. Not captured by
+  `OnSpellInterrupt`. Would need a separate hook.
 - **`LOOT` events** — not yet tracked. Core has `Player::SendLoot` and
   `LootItem` / `Loot` structures with item ID, count, and recipient.
   Would enable tracking boss loot drops per kill for historical loot tables
@@ -71,7 +69,7 @@ Safety net for log cleanup — fires when an instance save is removed from the d
 
 ## Upstream Contribution
 
-The 15 custom ScriptMgr hooks should be submitted as an AzerothCore PR.
+The 16 custom ScriptMgr hooks should be submitted as an AzerothCore PR.
 They are read-only observer hooks with zero gameplay impact, inserted at
 the server's existing packet-send points. The reference implementation
 (MellianStudios fork) proves the concept works.

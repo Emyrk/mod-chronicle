@@ -347,6 +347,7 @@ public:
         GLOBALHOOK_ON_SPELL_EXECUTE_LOG_SUMMON_OBJECT,
         GLOBALHOOK_ON_BEFORE_SET_BOSS_STATE,
         GLOBALHOOK_ON_AFTER_UPDATE_ENCOUNTER_STATE,
+        GLOBALHOOK_ON_SPELL_INTERRUPT,
     }) { }
 
     // -----------------------------------------------------------------------
@@ -479,6 +480,23 @@ public:
                 map, type, creditEntry, source, difficulty,
                 encounterDbcId, encounterName, dungeonCompleted));
         InstanceTracker::Instance().UploadInstanceSnapshot(instanceId);
+    }
+
+    // -----------------------------------------------------------------------
+    // OnSpellInterrupt — spell interrupt (Kick, Counterspell, Pummel, etc.)
+    // -----------------------------------------------------------------------
+    void OnSpellInterrupt(Unit* interrupter, Unit* interrupted,
+        uint32 interruptSpellId, uint32 interruptedSpellId) override
+    {
+        if (!interrupter || !interrupted || !InstanceTracker::Instance().IsEnabled())
+            return;
+
+        InstanceTracker::Instance().EnsureUnitInfo(interrupter);
+        InstanceTracker::Instance().EnsureUnitInfo(interrupted);
+
+        InstanceTracker::Instance().WriteForUnit(
+            interrupted, EventFormatter::SpellInterrupt(
+                interrupter, interrupted, interruptSpellId, interruptedSpellId));
     }
 };
 

@@ -8,7 +8,7 @@ Every dungeon/raid instance gets its own log file. Events are written in
 real-time as combat happens, producing files that can be uploaded directly to
 Chronicle for analysis.
 
-> **Requires custom ScriptMgr hooks.** This module depends on 15 hooks added to
+> **Requires custom ScriptMgr hooks.** This module depends on 16 hooks added to
 > the AzerothCore core that are not in mainline. See
 > [Custom Hooks](#custom-scriptmgr-hooks) below.
 
@@ -36,6 +36,7 @@ These follow the standard WotLK combat log format: `<unix_millis>  EVENT_TYPE,pa
 | `SPELL_SUMMON` | `OnSpellExecuteLogSummonObject` | Unit summoned a creature or game object (pet, totem, trap, etc.) |
 | `SPELL_CAST_SUCCESS` | `OnSpellSendSpellGo` | Spell cast completed (fires at `SPELL_GO` packet) |
 | `UNIT_DIED` | `OnUnitDeath` | Unit death |
+| `SPELL_INTERRUPT` | `OnSpellInterrupt` | Spell interrupt (Kick, Counterspell, Pummel) with both spell IDs |
 | `ENVIRONMENTAL_DAMAGE` | `OnEnvironmentalDamage` | Lava, drowning, falling, fatigue damage |
 
 ### Chronicle Extension Events
@@ -76,7 +77,7 @@ tree. AC's CMake auto-discovers any subdirectory containing `.cpp` files.
 
 ### 2. Apply Custom Hooks
 
-This module requires 15 custom ScriptMgr hooks patched into the AzerothCore
+This module requires 16 custom ScriptMgr hooks patched into the AzerothCore
 core. Apply the patch from
 [Emyrk/azerothcore-wotlk#2](https://github.com/Emyrk/azerothcore-wotlk/pull/2)
 to your AzerothCore source tree before building.
@@ -117,7 +118,7 @@ tail -f ./env/dist/logs/chronicle_logs/instance_*.log
 
 ## Custom ScriptMgr Hooks
 
-This module requires 15 hooks added to the AzerothCore core. These are
+This module requires 16 hooks added to the AzerothCore core. These are
 **read-only observer hooks** inserted at the server's packet-send points — they
 have zero gameplay impact.
 
@@ -137,13 +138,14 @@ have zero gameplay impact.
 | `OnDealDamageShieldDamage(DamageInfo*, uint32)` | `Unit::DealDamageShieldDamage()` | Damage shield (thorns) |
 | `OnDamageAbsorbed(DamageInfo&, SpellInfo const*, Unit*, uint32)` | `Unit::CalcAbsorbResist()` | Per-aura absorb attribution |
 
-### GlobalScript (3 custom hooks + 2 mainline hooks)
+### GlobalScript (4 custom hooks + 2 mainline hooks)
 
 | Hook | Inserted At | Data |
 |------|------------|------|
 | `OnSpellSendSpellGo(Spell*)` | `Spell::SendSpellGo()` | Spell cast success at `SPELL_GO` packet |
 | `OnSpellExecuteLogSummonObject(Spell*, WorldObject*)` | `Spell::ExecuteLogEffectSummonObject()` | Summon with caster spell + summoned object |
 | `OnAuraApplicationClientUpdate(Unit*, Aura*, bool)` | `AuraApplication::ClientUpdate()` | Aura applied/removed at client notification |
+| `OnSpellInterrupt(Unit*, Unit*, uint32, uint32)` | `Spell::EffectInterruptCast()` | Spell interrupt with interrupter + interrupted spell IDs |
 | `OnBeforeSetBossState(...)` *(mainline)* | `InstanceScript::SetBossState()` | Boss encounter state transition (pull/kill/wipe) |
 | `OnAfterUpdateEncounterState(...)` *(mainline)* | `Map::UpdateEncounterState()` | Encounter credit with DBC boss names, difficulty, completion mask |
 
