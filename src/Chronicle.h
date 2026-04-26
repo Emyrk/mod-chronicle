@@ -201,6 +201,10 @@ public:
     // Flush the log file for a given instance to disk (e.g. after boss kill).
     void FlushInstance(uint32 instanceId);
 
+    // Flush, copy the log to a temp file, and upload the snapshot in a
+    // background thread.  The original file stays open for continued writing.
+    void UploadInstanceSnapshot(uint32 instanceId);
+
     // Emits CHRONICLE_UNIT_INFO for a unit the first time it's seen in an instance.
     // Called from combat hooks before writing damage/heal/death events.
     void EnsureUnitInfo(Unit* unit);

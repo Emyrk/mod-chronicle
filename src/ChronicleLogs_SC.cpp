@@ -478,7 +478,7 @@ public:
             EventFormatter::EncounterCredit(
                 map, type, creditEntry, source, difficulty,
                 encounterDbcId, encounterName, dungeonCompleted));
-        InstanceTracker::Instance().FlushInstance(instanceId);
+        InstanceTracker::Instance().UploadInstanceSnapshot(instanceId);
     }
 };
 

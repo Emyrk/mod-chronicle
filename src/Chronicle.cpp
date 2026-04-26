@@ -1310,3 +1310,42 @@ void InstanceTracker::FlushInstance(uint32 instanceId)
     if (it != _writers.end())
         it->second->Flush();
 }
+
+void InstanceTracker::UploadInstanceSnapshot(uint32 instanceId)
+{
+    if (_uploadURL.empty() || _uploadSecret.empty())
+        return;
+
+    std::string srcPath;
+    uint32 instId = 0;
+    std::string mapName;
+    std::string realmName;
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+        auto it = _writers.find(instanceId);
+        if (it == _writers.end())
+            return;
+
+        it->second->Flush();
+        srcPath   = it->second->GetPath();
+        instId    = it->second->GetInstanceId();
+        mapName   = it->second->GetMapName();
+        realmName = it->second->GetRealmName();
+    }
+
+    // Copy the log to a temporary file so the original stays open.
+    std::string snapPath = srcPath + ".snap";
+    std::error_code ec;
+    std::filesystem::copy_file(srcPath, snapPath,
+                               std::filesystem::copy_options::overwrite_existing, ec);
+    if (ec)
+    {
+        LOG_ERROR("module", "Chronicle: snapshot copy failed for {}: {}", srcPath, ec.message());
+        return;
+    }
+
+    // Upload (and delete the snapshot copy) in a background thread.
+    std::thread(&InstanceTracker::UploadAndDelete, snapPath,
+                _uploadURL, _uploadSecret,
+                instId, std::move(mapName), std::move(realmName)).detach();
+}
