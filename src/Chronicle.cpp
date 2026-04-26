@@ -565,7 +565,7 @@ std::string EventFormatter::SpellPeriodicEnergize(Unit* victim,
     AppendSpellPrefix(ss, spell->Id, spell->SpellName[0], spell->SchoolMask);
     // pInfo->damage is the energy amount; overDamage is meaningless here
     ss << "," << pInfo->damage
-       << ",0";   // powerType not available in SpellPeriodicAuraLogInfo
+       << "," << static_cast<int32>(auraEff->GetMiscValue());
     return ss.str();
 }
 

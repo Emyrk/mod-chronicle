@@ -225,7 +225,7 @@ public:
         {
             case SPELL_AURA_PERIODIC_DAMAGE:
             case SPELL_AURA_PERIODIC_DAMAGE_PERCENT:
-            case SPELL_AURA_PERIODIC_LEECH:
+            // case SPELL_AURA_PERIODIC_LEECH:  // unreachable — leech uses SendSpellNonMeleeDamageLog + HealBySpell
                 InstanceTracker::Instance().WriteForUnit(
                     victim, EventFormatter::SpellPeriodicDamage(victim, pInfo));
                 break;

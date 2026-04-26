@@ -28,8 +28,15 @@ Safety net for log cleanup — fires when an instance save is removed from the d
 - **Per-target hit/miss in `SPELL_CAST_SUCCESS`** — `Spell::m_UniqueTargetInfo` has
   per-target miss results, but `OnSpellSendSpellGo` only gives us the `Spell*`; need
   to extract and format the target list
-- **`SpellPeriodicEnergize` power type** — `SpellPeriodicAuraLogInfo` doesn't carry
-  the power type, so we emit `0`. Could be derived from the aura effect.
+- **`SPELL_AURA_PERIODIC_LEECH`** (Drain Life, Siphon Life) — unreachable via
+  `OnSendPeriodicAuraLog`; the core routes leech ticks through
+  `SendSpellNonMeleeDamageLog` + `HealBySpell` instead. Verify these are
+  captured correctly by existing hooks (`OnSendSpellNonMeleeDamageLog`,
+  `OnSendHealSpellLog`).
+- **`SPELL_AURA_PERIODIC_MANA_LEECH`** (Drain Mana, Viper Sting) — reaches
+  `SendPeriodicAuraLog` but not yet handled. Needs a `SPELL_PERIODIC_DRAIN`
+  formatter. Data: `pInfo->damage` = amount drained, `pInfo->multiplier` =
+  gain ratio, `auraEff->GetMiscValue()` = power type.
 
 ## Known Issues
 
