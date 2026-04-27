@@ -13,11 +13,13 @@
 #include "Map.h"
 #include "Pet.h"
 #include "Player.h"
+#include "Random.h"
 #include "Spell.h"
 #include "SpellInfo.h"
 #include "SpellMgr.h"
 #include "SpellAuraEffects.h"
 #include "SpellAuras.h"
+#include "Util.h"
 #include "World.h"
 #include "DBCStores.h"
 
@@ -926,12 +928,13 @@ void InstanceTracker::UploadOrphanedLogs()
         std::string filePath = p.string();
         LOG_INFO("module", "Chronicle: uploading orphaned log {}", filePath);
 
-        // We don't have the original instanceId/mapName/realmName, so these logs will not concatenate
-        // with any existing logs on the server. But it's better than losing them entirely.
+        // We don't have the original instanceId/mapName/realmName/token, so these
+        // logs will not concatenate with any existing logs on the server.
+        // But it's better than losing them entirely.
         std::thread(&InstanceTracker::UploadAndDelete, filePath,
                     _uploadURL, _uploadSecret,
                     /*instanceId=*/0, /*mapName=*/std::string(""),
-                    /*realmName=*/std::string("")).detach();
+                    /*realmName=*/std::string(""), /*instanceToken=*/std::string("")).detach();
         ++count;
     }
 
@@ -939,6 +942,21 @@ void InstanceTracker::UploadOrphanedLogs()
         LOG_INFO("module", "Chronicle: queued {} orphaned log file(s) for upload", count);
     else
         LOG_INFO("module", "Chronicle: no orphaned logs found in {}", logPath);
+}
+
+// static
+std::string InstanceTracker::GenerateInstanceToken()
+{
+    std::array<uint8, 16> bytes{};
+    for (auto& b : bytes)
+        b = static_cast<uint8>(rand32() & 0xFF);
+    return Acore::Impl::ByteArrayToHexStr(bytes.data(), bytes.size());
+}
+
+std::string InstanceTracker::GetInstanceToken(uint32 instanceId) const
+{
+    auto it = _instanceTokens.find(instanceId);
+    return it != _instanceTokens.end() ? it->second : "";
 }
 
 CombatLogWriter* InstanceTracker::GetOrCreateWriter(Map* map)
@@ -968,6 +986,9 @@ CombatLogWriter* InstanceTracker::GetOrCreateWriter(Map* map)
     writer->WriteLine(EventFormatter::Header(realmName));
     std::string instanceType = map->IsRaid() ? "raid" : "party";
     writer->WriteLine(EventFormatter::ZoneInfo(map->GetMapName(), map->GetId(), instanceId, instanceType));
+
+    // Generate a unique token for this instance, immune to instance-ID reuse.
+    _instanceTokens[instanceId] = GenerateInstanceToken();
 
     CombatLogWriter* ptr = writer.get();
     _writers[instanceId] = std::move(writer);
@@ -1001,6 +1022,7 @@ void InstanceTracker::RemoveInstance(uint32 instanceId)
     uint32 instId = 0;
     std::string mapName;
     std::string realmName;
+    std::string token;
     {
         std::lock_guard<std::mutex> lock(_mutex);
 
@@ -1014,6 +1036,12 @@ void InstanceTracker::RemoveInstance(uint32 instanceId)
             realmName = it->second->GetRealmName();
             _writers.erase(it);
         }
+        auto tokenIt = _instanceTokens.find(instanceId);
+        if (tokenIt != _instanceTokens.end())
+        {
+            token = tokenIt->second;
+            _instanceTokens.erase(tokenIt);
+        }
         _seenUnits.erase(instanceId);
     }
 
@@ -1022,7 +1050,8 @@ void InstanceTracker::RemoveInstance(uint32 instanceId)
     {
         std::thread(&InstanceTracker::UploadAndDelete, filePath,
                     _uploadURL, _uploadSecret,
-                    instId, std::move(mapName), std::move(realmName)).detach();
+                    instId, std::move(mapName), std::move(realmName),
+                    std::move(token)).detach();
     }
 }
 
@@ -1176,7 +1205,8 @@ void InstanceTracker::UploadAndDelete(std::string path,
                                        std::string secret,
                                        uint32 instanceId,
                                        std::string mapName,
-                                       std::string realmName)
+                                       std::string realmName,
+                                       std::string instanceToken)
 {
     // 1. Gzip-compress the log file in memory (zlib, windowBits=31 → gzip format).
     auto compressed = GzipFile(path);
@@ -1206,8 +1236,9 @@ void InstanceTracker::UploadAndDelete(std::string path,
     req.set(http::field::host,          parsed.host);
     req.set(http::field::content_type,  contentType);
     req.set(http::field::authorization, "Bearer " + secret);
-    req.set("X-Chronicle-Instance-Id",   std::to_string(instanceId));
+    req.set("X-Chronicle-Instance-Id",    std::to_string(instanceId));
     req.set("X-Chronicle-Instance-Name", mapName);
+    req.set("X-Chronicle-Instance-Token", instanceToken);
     req.set("X-Chronicle-Realm-Name",    realmName);
     req.body() = std::move(body);
     req.prepare_payload();
@@ -1339,6 +1370,7 @@ void InstanceTracker::UploadInstanceSnapshot(uint32 instanceId)
     uint32 instId = 0;
     std::string mapName;
     std::string realmName;
+    std::string token;
     {
         std::lock_guard<std::mutex> lock(_mutex);
         auto it = _writers.find(instanceId);
@@ -1350,6 +1382,7 @@ void InstanceTracker::UploadInstanceSnapshot(uint32 instanceId)
         instId    = it->second->GetInstanceId();
         mapName   = it->second->GetMapName();
         realmName = it->second->GetRealmName();
+        token     = GetInstanceToken(instanceId);
     }
 
     // Copy the log to a temporary file so the original stays open.
@@ -1366,5 +1399,6 @@ void InstanceTracker::UploadInstanceSnapshot(uint32 instanceId)
     // Upload (and delete the snapshot copy) in a background thread.
     std::thread(&InstanceTracker::UploadAndDelete, snapPath,
                 _uploadURL, _uploadSecret,
-                instId, std::move(mapName), std::move(realmName)).detach();
+                instId, std::move(mapName), std::move(realmName),
+                std::move(token)).detach();
 }

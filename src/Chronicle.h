@@ -19,6 +19,7 @@
 #include "Player.h"        // EnviromentalDamage (unscoped enum, can't forward-declare)
 #include "SharedDefines.h" // Powers, SpellMissInfo (unscoped enums)
 #include "DBCEnums.h"      // Difficulty
+#include <array>
 #include <fstream>
 #include <memory>
 #include <mutex>
@@ -213,18 +214,28 @@ public:
     // Called from combat hooks before writing damage/heal/death events.
     void EnsureUnitInfo(Unit* unit);
 
+    // Returns the unique instance token for the given instanceId, or "" if none.
+    std::string GetInstanceToken(uint32 instanceId) const;
+
 private:
     InstanceTracker() = default;
 
     CombatLogWriter* GetOrCreateWriter(Map* map);
 
+    // Generate a 128-bit random hex token (32 chars) for unique instance identity.
+    // Uses AzerothCore's rand32() + ByteArrayToHexStr().
+    static std::string GenerateInstanceToken();
+
     std::mutex _mutex;
     std::unordered_map<uint32, std::unique_ptr<CombatLogWriter>> _writers;
     // Set of (instanceId, unitGuid) pairs to avoid duplicate UNIT_INFO
     std::unordered_map<uint32, std::unordered_set<uint64>> _seenUnits;
+    // Per-instance random token, immune to AzerothCore instance-ID reuse.
+    std::unordered_map<uint32, std::string> _instanceTokens;
 
     static void UploadAndDelete(std::string path, std::string url, std::string secret,
-                                uint32 instanceId, std::string mapName, std::string realmName);
+                                uint32 instanceId, std::string mapName, std::string realmName,
+                                std::string instanceToken);
 
     bool        _enabled   = false;
     std::string _logDir    = "chronicle_logs";
