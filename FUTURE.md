@@ -20,10 +20,6 @@ Safety net for log cleanup — fires when an instance save is removed from the d
 - **Silence-based interrupts** (e.g. Silencing Shot) — these don't go through
   `EffectInterruptCast`, they use `SPELL_AURA_MOD_SILENCE`. Not captured by
   `OnSpellInterrupt`. Would need a separate hook.
-- **`LOOT` events** — not yet tracked. Core has `Player::SendLoot` and
-  `LootItem` / `Loot` structures with item ID, count, and recipient.
-  Would enable tracking boss loot drops per kill for historical loot tables
-  and GP/DKP integration.
 - **Per-target hit/miss in `SPELL_CAST_SUCCESS`** — `Spell::m_UniqueTargetInfo` has
   per-target miss results, but `OnSpellSendSpellGo` only gives us the `Spell*`; need
   to extract and format the target list

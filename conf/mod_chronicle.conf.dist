@@ -12,7 +12,7 @@
 #    Chronicle.Enable
 #        Description: Enable server-side combat log generation.
 #                     Log files are created per dungeon/raid instance in
-#                     Chronicle's V2 pipe-delimited format.
+#                     Chronicle's WotLK-style comma-separated combat log format.
 #        Default:     1 - Enabled
 #                     0 - Disabled
 #
@@ -45,3 +45,66 @@ Chronicle.UploadURL = ""
 #
 
 Chronicle.UploadSecret = ""
+
+#
+#    Chronicle.RequireTLS
+#        Description: Require https:// upload URLs for Chronicle uploads/pings.
+#                     Set this to 0 in local/dev environments that use plain HTTP.
+#        Default:     0 - Disabled
+#                     1 - Enabled
+#
+
+Chronicle.RequireTLS = 0
+
+#
+#    Chronicle.VerifyTLS
+#        Description: Verify peer certificates and hostnames for https:// uploads.
+#                     Only applies when Chronicle.UploadURL uses HTTPS.
+#                     Disable only for controlled dev environments with self-signed certs.
+#        Default:     1 - Enabled
+#                     0 - Disabled
+#
+
+Chronicle.VerifyTLS = 1
+
+#
+#    Chronicle.IdleCloseSeconds
+#        Description: Number of seconds without new log lines before Chronicle
+#                     treats the current file as idle.
+#                     0 disables idle handling.
+#        Default:     0 - Disabled
+#
+
+Chronicle.IdleCloseSeconds = 0
+
+#
+#    Chronicle.RotateOnIdle
+#        Description: When enabled and IdleCloseSeconds is exceeded, Chronicle
+#                     closes the current file and starts a fresh segment on the
+#                     next write. If uploads are configured, the completed idle
+#                     segment is queued for upload immediately.
+#        Default:     0 - Disabled
+#                     1 - Enabled
+#
+
+Chronicle.RotateOnIdle = 0
+
+#
+#    Chronicle.UploadSnapshots
+#        Description: Allow Chronicle to upload temporary snapshot copies of an
+#                     active instance log while the instance is still running.
+#        Default:     1 - Enabled
+#                     0 - Disabled
+#
+
+Chronicle.UploadSnapshots = 1
+
+#
+#    Chronicle.SnapshotOnEncounterCredit
+#        Description: Upload a snapshot when AzerothCore reports encounter
+#                     credit. Requires Chronicle.UploadSnapshots = 1.
+#        Default:     1 - Enabled
+#                     0 - Disabled
+#
+
+Chronicle.SnapshotOnEncounterCredit = 1

@@ -20,19 +20,22 @@
 #include "SharedDefines.h" // Powers, SpellMissInfo (unscoped enums)
 #include "DBCEnums.h"      // Difficulty
 #include <array>
+#include <chrono>
+#include <condition_variable>
 #include <fstream>
 #include <memory>
 #include <mutex>
 #include <string>
-#include <unordered_map>
-#include <thread>
 #include <unordered_set>
+#include <unordered_map>
+#include <vector>
 
 class Aura;
 class AuraApplication;
 class AuraEffect;
 class DamageInfo;
 class HealInfo;
+class Item;
 class Map;
 class Spell;
 class SpellInfo;
@@ -107,6 +110,7 @@ public:
     // Periodic ticks — damage, healing, energize
     static std::string SpellPeriodicDamage(Unit* victim, SpellPeriodicAuraLogInfo* pInfo);
     static std::string SpellPeriodicHeal(Unit* victim, SpellPeriodicAuraLogInfo* pInfo);
+    static std::string SpellPeriodicDrain(Unit* victim, SpellPeriodicAuraLogInfo* pInfo);
     static std::string SpellPeriodicEnergize(Unit* victim, SpellPeriodicAuraLogInfo* pInfo);
 
     // Damage shield (thorns etc.)
@@ -121,7 +125,8 @@ public:
     static std::string SpellAuraRemoved(Unit* caster, Unit* target, SpellInfo const* spell);
 
     // Spell cast
-    static std::string SpellCastSuccess(Unit* caster, SpellInfo const* spell);
+    static std::string SpellCastSuccess(Unit* caster, WorldObject* explicitTarget,
+                                        SpellInfo const* spell);
 
     // Summon
     static std::string SpellSummon(Unit* caster, SpellInfo const* spell, WorldObject* summoned);
@@ -136,6 +141,18 @@ public:
     // Spell interrupt (Kick, Counterspell, Pummel, etc.)
     static std::string SpellInterrupt(Unit* interrupter, Unit* interrupted,
                                       uint32 interruptSpellId, uint32 interruptedSpellId);
+    static std::string SpellDispel(Unit* dispeller, Unit* victim,
+                                   uint32 dispelSpellId, uint32 removedSpellId,
+                                   bool isSteal);
+    static std::string SpellTargetResult(Unit* caster, Unit* target,
+                                         SpellInfo const* spell,
+                                         SpellMissInfo missInfo,
+                                         SpellMissInfo reflectResult,
+                                         uint8 effectMask);
+    static std::string LootItem(Player* looter, ObjectGuid lootGuid,
+                                Item* item, uint32 count);
+    static std::string LootMoney(Player* looter, ObjectGuid lootGuid,
+                                 uint32 amount);
 
     // --- Encounter events ---
     static std::string EncounterStart(uint32 bossId, Map* instance);
@@ -160,18 +177,25 @@ public:
     void WriteLine(std::string const& line);
     void Flush();
     void Close();
+    bool Reopen();
     bool IsOpen() const;
+    bool IsIdleFor(std::chrono::seconds idleTimeout) const;
     std::string const& GetPath() const { return _path; }
     uint32 GetInstanceId() const { return _instanceId; }
     std::string const& GetMapName() const { return _mapName; }
     std::string const& GetRealmName() const { return _realmName; }
 
 private:
+    void OpenNewFile();
+
     std::ofstream _file;
+    std::string   _dir;
     std::string   _path;
+    uint32        _mapId;
     uint32        _instanceId;
     std::string   _mapName;
     std::string   _realmName;
+    std::chrono::steady_clock::time_point _lastWriteTime;
 };
 
 // ---------------------------------------------------------------------------
@@ -183,10 +207,13 @@ public:
     static InstanceTracker& Instance();
 
     void LoadConfig();
+    void Shutdown();
     bool IsEnabled() const { return _enabled; }
     std::string const& GetUploadURL() const { return _uploadURL; }
     std::string const& GetUploadSecret() const { return _uploadSecret; }
-    static void PingRemote(std::string url, std::string secret);
+    bool ShouldSnapshotOnEncounterCredit() const { return _uploadSnapshots && _snapshotOnEncounterCredit; }
+    static void PingRemote(std::string url, std::string secret, bool requireTls, bool verifyTls);
+    void QueuePingTask(std::string url, std::string secret);
 
     // Sweep the log directory on startup and upload any leftover .log files
     // from a previous crash or unclean shutdown.
@@ -196,19 +223,23 @@ public:
     void OnPlayerEnterInstance(Map* map, Player* player);
     void OnPlayerLeaveInstance(Map* map, Player* player);
     void RemoveInstance(uint32 instanceId);
+    void OnInstanceIdRemoved(uint32 instanceId);
 
     // Called from UnitScript / GlobalScript / PlayerScript hooks — resolves unit→map→writer.
     void WriteForUnit(Unit* unit, std::string const& line);
+    void WriteForMap(Map* map, std::string const& line);
 
     // Write directly to a known instance (used by hooks that provide Map* but no Unit*).
     void WriteForInstance(uint32 instanceId, std::string const& line);
 
     // Flush the log file for a given instance to disk (e.g. after boss kill).
     void FlushInstance(uint32 instanceId);
+    void FlushMap(Map* map);
 
     // Flush, copy the log to a temp file, and upload the snapshot in a
     // background thread.  The original file stays open for continued writing.
     void UploadInstanceSnapshot(uint32 instanceId);
+    void UploadInstanceSnapshot(Map* map);
 
     // Emits CHRONICLE_UNIT_INFO for a unit the first time it's seen in an instance.
     // Called from combat hooks before writing damage/heal/death events.
@@ -221,6 +252,12 @@ private:
     InstanceTracker() = default;
 
     CombatLogWriter* GetOrCreateWriter(Map* map);
+    void FinalizeWriterForIdleRotation(uint32 instanceId, std::unique_ptr<CombatLogWriter> writer,
+                                       std::string instanceToken);
+    void EmitWriterPreamble(CombatLogWriter& writer, Map* map);
+    void EmitCombatantInfoIfNeeded(CombatLogWriter& writer, Player* player, uint32 instanceId);
+    void QueueUploadTask(std::string path, uint32 instanceId, std::string mapName,
+                         std::string realmName, std::string instanceToken);
 
     // Generate a 128-bit random hex token (32 chars) for unique instance identity.
     // Uses AzerothCore's rand32() + ByteArrayToHexStr().
@@ -230,17 +267,29 @@ private:
     std::unordered_map<uint32, std::unique_ptr<CombatLogWriter>> _writers;
     // Set of (instanceId, unitGuid) pairs to avoid duplicate UNIT_INFO
     std::unordered_map<uint32, std::unordered_set<uint64>> _seenUnits;
+    std::unordered_map<uint32, std::unordered_set<uint64>> _seenCombatants;
     // Per-instance random token, immune to AzerothCore instance-ID reuse.
     std::unordered_map<uint32, std::string> _instanceTokens;
 
+    std::mutex _taskMutex;
+    std::condition_variable _taskCv;
+    uint32 _activeBackgroundTasks = 0;
+    bool _shuttingDown = false;
+
     static void UploadAndDelete(std::string path, std::string url, std::string secret,
                                 uint32 instanceId, std::string mapName, std::string realmName,
-                                std::string instanceToken);
+                                std::string instanceToken, bool requireTls, bool verifyTls);
 
     bool        _enabled   = false;
     std::string _logDir    = "chronicle_logs";
     std::string _uploadURL;
     std::string _uploadSecret;
+    bool        _requireTls = false;
+    bool        _verifyTls = true;
+    uint32      _idleCloseSeconds = 0;
+    bool        _rotateOnIdle = false;
+    bool        _uploadSnapshots = true;
+    bool        _snapshotOnEncounterCredit = true;
 };
 
 #endif // MOD_CHRONICLE_H

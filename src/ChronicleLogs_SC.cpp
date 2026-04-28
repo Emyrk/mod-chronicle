@@ -10,6 +10,7 @@
 
 #include "Log.h"
 #include "Map.h"
+#include "ObjectAccessor.h"
 #include "Player.h"
 #include "ScriptMgr.h"
 #include "Spell.h"
@@ -18,6 +19,7 @@
 #include "SpellInfo.h"
 #include "Unit.h"
 #include "InstanceScript.h" // EncounterState
+#include "LootScript.h"
 #include "ObjectMgr.h"      // DungeonEncounter, DungeonEncounterList
 
 // ===========================================================================
@@ -187,6 +189,8 @@ public:
 
         // Overkill must be computed here — the reflect hook does not
         // receive it from the core (only OnSendSpellNonMeleeDamageLog does).
+        // Mirror Unit::SendSpellNonMeleeReflectLog so Chronicle stays aligned
+        // with the packet the client would have received.
         int32 reflectOverkill = static_cast<int32>(log->damage)
                               - static_cast<int32>(log->target->GetHealth());
         InstanceTracker::Instance().WriteForUnit(
@@ -235,6 +239,10 @@ public:
             case SPELL_AURA_OBS_MOD_HEALTH:
                 InstanceTracker::Instance().WriteForUnit(
                     victim, EventFormatter::SpellPeriodicHeal(victim, pInfo));
+                break;
+            case SPELL_AURA_PERIODIC_MANA_LEECH:
+                InstanceTracker::Instance().WriteForUnit(
+                    victim, EventFormatter::SpellPeriodicDrain(victim, pInfo));
                 break;
             case SPELL_AURA_PERIODIC_ENERGIZE:
             case SPELL_AURA_OBS_MOD_POWER:
@@ -348,25 +356,59 @@ public:
         GLOBALHOOK_ON_BEFORE_SET_BOSS_STATE,
         GLOBALHOOK_ON_AFTER_UPDATE_ENCOUNTER_STATE,
         GLOBALHOOK_ON_SPELL_INTERRUPT,
+        GLOBALHOOK_ON_SPELL_DISPEL,
+        GLOBALHOOK_ON_INSTANCEID_REMOVED,
     }) { }
 
     // -----------------------------------------------------------------------
     // OnSpellSendSpellGo — spell cast completed → SPELL_CAST_SUCCESS
+    // and CHRONICLE_SPELL_TARGET_RESULT for packet-aligned per-target outcomes.
     // -----------------------------------------------------------------------
     void OnSpellSendSpellGo(Spell* spell) override
     {
-        if (!spell || !spell->GetCaster() || !InstanceTracker::Instance().IsEnabled())
+        if (!spell || !InstanceTracker::Instance().IsEnabled())
             return;
 
         Unit* caster = spell->GetCaster();
+        if (!caster)
+            return;
+
+        WorldObject* explicitTarget = spell->m_targets.GetObjectTarget();
+        if (!explicitTarget)
+            explicitTarget = spell->GetOriginalTarget();
         SpellInfo const* spellInfo = spell->m_spellInfo;
         if (!spellInfo)
             return;
 
         InstanceTracker::Instance().EnsureUnitInfo(caster);
+        if (Unit* targetUnit = explicitTarget ? explicitTarget->ToUnit() : nullptr)
+            InstanceTracker::Instance().EnsureUnitInfo(targetUnit);
 
         InstanceTracker::Instance().WriteForUnit(
-            caster, EventFormatter::SpellCastSuccess(caster, spellInfo));
+            caster, EventFormatter::SpellCastSuccess(caster, explicitTarget, spellInfo));
+
+        auto const* uniqueTargets = spell->GetUniqueTargetInfo();
+        if (!uniqueTargets)
+            return;
+
+        for (TargetInfo const& targetInfo : *uniqueTargets)
+        {
+            SpellMissInfo missInfo = targetInfo.missCondition;
+            if (missInfo == SPELL_MISS_NONE && targetInfo.effectMask == 0)
+                missInfo = SPELL_MISS_IMMUNE2;
+
+            Unit* targetUnit = caster->GetGUID() == targetInfo.targetGUID
+                ? caster
+                : ObjectAccessor::GetUnit(*caster, targetInfo.targetGUID);
+            if (!targetUnit)
+                continue;
+
+            InstanceTracker::Instance().EnsureUnitInfo(targetUnit);
+            InstanceTracker::Instance().WriteForUnit(
+                targetUnit, EventFormatter::SpellTargetResult(
+                    caster, targetUnit, spellInfo, missInfo,
+                    targetInfo.reflectResult, targetInfo.effectMask));
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -425,24 +467,22 @@ public:
         if (!instance || !InstanceTracker::Instance().IsEnabled())
             return;
 
-        uint32 instanceId = instance->GetInstanceId();
-
         if (newState == IN_PROGRESS && oldState != IN_PROGRESS)
         {
-            InstanceTracker::Instance().WriteForInstance(instanceId,
+            InstanceTracker::Instance().WriteForMap(instance,
                 EventFormatter::EncounterStart(id, instance));
         }
         else if (oldState == IN_PROGRESS && newState == DONE)
         {
-            InstanceTracker::Instance().WriteForInstance(instanceId,
+            InstanceTracker::Instance().WriteForMap(instance,
                 EventFormatter::EncounterEnd(id, instance, /*success=*/true));
-            InstanceTracker::Instance().FlushInstance(instanceId);
+            InstanceTracker::Instance().FlushMap(instance);
         }
         else if (oldState == IN_PROGRESS && newState == FAIL)
         {
-            InstanceTracker::Instance().WriteForInstance(instanceId,
+            InstanceTracker::Instance().WriteForMap(instance,
                 EventFormatter::EncounterEnd(id, instance, /*success=*/false));
-            InstanceTracker::Instance().FlushInstance(instanceId);
+            InstanceTracker::Instance().FlushMap(instance);
         }
     }
 
@@ -456,8 +496,6 @@ public:
     {
         if (!map || !updated || !InstanceTracker::Instance().IsEnabled())
             return;
-
-        uint32 instanceId = map->GetInstanceId();
 
         // Find the encounter that matches this creditEntry
         std::string encounterName;
@@ -475,11 +513,13 @@ public:
             }
         }
 
-        InstanceTracker::Instance().WriteForInstance(instanceId,
+        InstanceTracker::Instance().WriteForMap(map,
             EventFormatter::EncounterCredit(
                 map, type, creditEntry, source, difficulty,
                 encounterDbcId, encounterName, dungeonCompleted));
-        InstanceTracker::Instance().UploadInstanceSnapshot(instanceId);
+
+        if (InstanceTracker::Instance().ShouldSnapshotOnEncounterCredit())
+            InstanceTracker::Instance().UploadInstanceSnapshot(map);
     }
 
     // -----------------------------------------------------------------------
@@ -498,6 +538,25 @@ public:
             interrupted, EventFormatter::SpellInterrupt(
                 interrupter, interrupted, interruptSpellId, interruptedSpellId));
     }
+
+    void OnSpellDispel(Unit* dispeller, Unit* victim,
+        uint32 dispelSpellId, uint32 removedSpellId, bool isSteal) override
+    {
+        if (!dispeller || !victim || !InstanceTracker::Instance().IsEnabled())
+            return;
+
+        InstanceTracker::Instance().EnsureUnitInfo(dispeller);
+        InstanceTracker::Instance().EnsureUnitInfo(victim);
+
+        InstanceTracker::Instance().WriteForUnit(
+            victim, EventFormatter::SpellDispel(
+                dispeller, victim, dispelSpellId, removedSpellId, isSteal));
+    }
+
+    void OnInstanceIdRemoved(uint32 instanceId) override
+    {
+        InstanceTracker::Instance().OnInstanceIdRemoved(instanceId);
+    }
 };
 
 // ===========================================================================
@@ -508,6 +567,7 @@ class ChroniclePlayerScript : public PlayerScript
 public:
     ChroniclePlayerScript() : PlayerScript("ChroniclePlayerScript", {
         PLAYERHOOK_ON_ENVIRONMENTAL_DAMAGE,
+        PLAYERHOOK_ON_LOOT_ITEM,
     }) { }
 
     void OnEnvironmentalDamage(Player* player, EnviromentalDamage type,
@@ -520,6 +580,44 @@ public:
 
         InstanceTracker::Instance().WriteForUnit(
             player, EventFormatter::EnvironmentalDamage(player, type, damage));
+    }
+
+    void OnPlayerLootItem(Player* player, Item* item, uint32 count,
+                          ObjectGuid lootGuid) override
+    {
+        if (!player || !item || !InstanceTracker::Instance().IsEnabled())
+            return;
+
+        InstanceTracker::Instance().EnsureUnitInfo(player);
+        if (!lootGuid.IsEmpty() && lootGuid.IsCreatureOrVehicle())
+            if (Creature* lootUnit = player->GetMap() ? player->GetMap()->GetCreature(lootGuid) : nullptr)
+                InstanceTracker::Instance().EnsureUnitInfo(lootUnit);
+
+        InstanceTracker::Instance().WriteForUnit(
+            player, EventFormatter::LootItem(player, lootGuid, item, count));
+    }
+};
+
+class ChronicleLootScript : public LootScript
+{
+public:
+    ChronicleLootScript() : LootScript("ChronicleLootScript", {
+        LOOTHOOK_ON_LOOT_MONEY,
+    }) { }
+
+    void OnLootMoney(Player* player, uint32 gold) override
+    {
+        if (!player || !gold || !InstanceTracker::Instance().IsEnabled())
+            return;
+
+        ObjectGuid lootGuid = player->GetLootGUID();
+        InstanceTracker::Instance().EnsureUnitInfo(player);
+        if (!lootGuid.IsEmpty() && lootGuid.IsCreatureOrVehicle())
+            if (Creature* lootUnit = player->GetMap() ? player->GetMap()->GetCreature(lootGuid) : nullptr)
+                InstanceTracker::Instance().EnsureUnitInfo(lootUnit);
+
+        InstanceTracker::Instance().WriteForUnit(
+            player, EventFormatter::LootMoney(player, lootGuid, gold));
     }
 };
 
@@ -569,6 +667,7 @@ public:
     ChronicleWorldScript() : WorldScript("ChronicleWorldScript", {
         WORLDHOOK_ON_BEFORE_CONFIG_LOAD,
         WORLDHOOK_ON_STARTUP,
+        WORLDHOOK_ON_SHUTDOWN,
     }) { }
 
     void OnBeforeConfigLoad(bool /*reload*/) override
@@ -593,8 +692,13 @@ public:
         // Upload any orphaned logs left over from a crash / unclean shutdown.
         tracker.UploadOrphanedLogs();
 
-        // Run ping in a detached thread to avoid blocking server startup.
-        std::thread(InstanceTracker::PingRemote, url, secret).detach();
+        // Run ping asynchronously without detached threads.
+        tracker.QueuePingTask(url, secret);
+    }
+
+    void OnShutdown() override
+    {
+        InstanceTracker::Instance().Shutdown();
     }
 };
 
@@ -606,6 +710,7 @@ void AddChronicleScripts()
     new ChronicleUnitScript();
     new ChronicleGlobalScript();
     new ChroniclePlayerScript();
+    new ChronicleLootScript();
     new ChronicleAllMapScript();
     new ChronicleWorldScript();
 }

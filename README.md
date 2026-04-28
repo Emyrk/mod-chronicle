@@ -8,7 +8,7 @@ Every dungeon/raid instance gets its own log file. Events are written in
 real-time as combat happens, producing files that can be uploaded directly to
 Chronicle for analysis.
 
-> **Requires custom ScriptMgr hooks.** This module depends on 16 hooks added to
+> **Requires custom ScriptMgr hooks.** This module depends on 17 hooks added to
 > the AzerothCore core that are not in mainline. See
 > [Custom Hooks](#custom-scriptmgr-hooks) below.
 
@@ -28,6 +28,7 @@ These follow the standard WotLK combat log format: `<unix_millis>  EVENT_TYPE,pa
 | `SPELL_ENERGIZE` | `OnSendEnergizeSpellLog` | Mana/rage/energy gains |
 | `SPELL_PERIODIC_DAMAGE` | `OnSendPeriodicAuraLog` | DoT tick damage |
 | `SPELL_PERIODIC_HEAL` | `OnSendPeriodicAuraLog` | HoT tick healing |
+| `SPELL_PERIODIC_DRAIN` | `OnSendPeriodicAuraLog` | Periodic mana/resource drain |
 | `SPELL_PERIODIC_ENERGIZE` | `OnSendPeriodicAuraLog` | Periodic resource gain |
 | `DAMAGE_SHIELD` | `OnDealDamageShieldDamage` | Thorns/retribution aura damage |
 | `SPELL_ABSORBED` | `OnDamageAbsorbed` | Per-aura absorb (PW:S, Mana Shield, etc.) with spell attribution |
@@ -35,8 +36,10 @@ These follow the standard WotLK combat log format: `<unix_millis>  EVENT_TYPE,pa
 | `SPELL_AURA_REMOVED` | `OnAuraApplicationClientUpdate` | Buff/debuff removed |
 | `SPELL_SUMMON` | `OnSpellExecuteLogSummonObject` | Unit summoned a creature or game object (pet, totem, trap, etc.) |
 | `SPELL_CAST_SUCCESS` | `OnSpellSendSpellGo` | Spell cast completed (fires at `SPELL_GO` packet) |
+| `SPELL_DISPEL` | `OnSpellDispel` | Successful dispel with removed aura spell and aura type |
+| `SPELL_STOLEN` | `OnSpellDispel` | Successful spell steal with removed aura spell |
 | `UNIT_DIED` | `OnUnitDeath` | Unit death |
-| `SPELL_INTERRUPT` | `OnSpellInterrupt` | Spell interrupt (Kick, Counterspell, Pummel) with both spell IDs |
+| `SPELL_INTERRUPT` | `OnSpellInterrupt` | Spell interrupt (Kick, Counterspell, Pummel, silence-based lockouts) with both spell IDs |
 | `ENVIRONMENTAL_DAMAGE` | `OnEnvironmentalDamage` | Lava, drowning, falling, fatigue damage |
 
 ### Chronicle Extension Events
@@ -52,6 +55,9 @@ the standard combat log.
 | `CHRONICLE_UNIT_INFO` | Unit metadata, emitted first time a GUID appears in combat |
 | `CHRONICLE_UNIT_EVADE` | Creature entered evade mode |
 | `CHRONICLE_UNIT_COMBAT` | Unit entered combat with a target |
+| `CHRONICLE_LOOT_ITEM` | Item looted, including loot source type, item entry, item name, and count |
+| `CHRONICLE_LOOT_MONEY` | Money looted, including loot source type and copper amount |
+| `CHRONICLE_SPELL_TARGET_RESULT` | Per-target hit/miss/reflect result captured from `Spell::m_UniqueTargetInfo` at `SPELL_GO` time |
 | `CHRONICLE_ENCOUNTER_START` | Boss encounter pulled (bossIndex, mapId, instanceId) |
 | `CHRONICLE_ENCOUNTER_END` | Boss encounter ended — kill or wipe (bossIndex, mapId, instanceId, success) |
 | `CHRONICLE_ENCOUNTER_CREDIT` | Boss kill credit with DBC encounter name, difficulty, completion bitmask |
@@ -68,6 +74,16 @@ same data the client combat log would show, with full mitigation breakdowns:
 
 **Heal suffix:** `amount,overheal,absorbed,critical`
 
+**Drain suffix:** `amount,powerType,extraAmount`
+
+**Dispel/Stolen suffix:** `extraSpellId,"extraSpellName",0xExtraSchool,auraType`
+
+**Loot item suffix:** `sourceType,itemId,"itemName",count`
+
+**Loot money suffix:** `sourceType,amount`
+
+**Target-result suffix:** `result,reflectResult,effectMask`
+
 ## Setup
 
 ### 1. Place the Module
@@ -77,7 +93,7 @@ tree. AC's CMake auto-discovers any subdirectory containing `.cpp` files.
 
 ### 2. Apply Custom Hooks
 
-This module requires 16 custom ScriptMgr hooks patched into the AzerothCore
+This module requires 17 custom ScriptMgr hooks patched into the AzerothCore
 core. Apply the patch from
 [Emyrk/azerothcore-wotlk#2](https://github.com/Emyrk/azerothcore-wotlk/pull/2)
 to your AzerothCore source tree before building.
@@ -94,9 +110,26 @@ Configure via environment variables or `mod_chronicle.conf`:
 | `Chronicle.LogDir` | `AC_CHRONICLE_LOG_DIR` | `chronicle_logs` | Log subdirectory (relative to LogsDir) |
 | `Chronicle.UploadURL` | `AC_CHRONICLE_UPLOAD_URL` | `""` | Chronicle server upload endpoint |
 | `Chronicle.UploadSecret` | `AC_CHRONICLE_UPLOAD_SECRET` | `""` | Bearer token for upload auth |
+| `Chronicle.RequireTLS` | - | `0` | Require `https://` for uploads/pings; keep `0` for plain-HTTP dev environments |
+| `Chronicle.VerifyTLS` | - | `1` | Verify peer certs and hostnames for HTTPS uploads |
+| `Chronicle.IdleCloseSeconds` | - | `0` | Idle threshold in seconds before Chronicle closes/segments the current file |
+| `Chronicle.RotateOnIdle` | - | `0` | Start a fresh log segment after an idle timeout on the next write |
+| `Chronicle.UploadSnapshots` | - | `1` | Enable temporary active-log snapshot uploads |
+| `Chronicle.SnapshotOnEncounterCredit` | - | `1` | Upload a snapshot when encounter credit fires |
 
 When both `UploadURL` and `UploadSecret` are set, log files are gzipped,
 uploaded to Chronicle when an instance closes, and deleted on success.
+
+Chronicle accepts both `http://` and `https://` upload URLs. If you want to
+enforce HTTPS in production, set `Chronicle.RequireTLS = 1`. If your dev HTTPS
+stack uses a self-signed certificate, keep HTTPS enabled but set
+`Chronicle.VerifyTLS = 0` for that environment only.
+
+When `IdleCloseSeconds` is greater than `0`, Chronicle evaluates inactivity the
+next time a new line would be written. With `RotateOnIdle = 1`, the previous
+segment is closed and a fresh file is started for the next combat activity.
+If uploads are configured, completed idle segments are queued for upload as
+soon as rotation happens.
 
 On startup the module pings the upload endpoint to verify connectivity:
 ```
@@ -138,14 +171,16 @@ have zero gameplay impact.
 | `OnDealDamageShieldDamage(DamageInfo*, uint32)` | `Unit::DealDamageShieldDamage()` | Damage shield (thorns) |
 | `OnDamageAbsorbed(DamageInfo&, SpellInfo const*, Unit*, uint32)` | `Unit::CalcAbsorbResist()` | Per-aura absorb attribution |
 
-### GlobalScript (4 custom hooks + 2 mainline hooks)
+### GlobalScript (5 custom hooks + 3 mainline hooks)
 
 | Hook | Inserted At | Data |
 |------|------------|------|
 | `OnSpellSendSpellGo(Spell*)` | `Spell::SendSpellGo()` | Spell cast success at `SPELL_GO` packet |
 | `OnSpellExecuteLogSummonObject(Spell*, WorldObject*)` | `Spell::ExecuteLogEffectSummonObject()` | Summon with caster spell + summoned object |
 | `OnAuraApplicationClientUpdate(Unit*, Aura*, bool)` | `AuraApplication::ClientUpdate()` | Aura applied/removed at client notification |
-| `OnSpellInterrupt(Unit*, Unit*, uint32, uint32)` | `Spell::EffectInterruptCast()` | Spell interrupt with interrupter + interrupted spell IDs |
+| `OnSpellInterrupt(Unit*, Unit*, uint32, uint32)` | `Spell::EffectInterruptCast()`, `AuraEffect::HandleAuraModSilence()` | Spell interrupt with interrupter + interrupted spell IDs |
+| `OnSpellDispel(Unit*, Unit*, uint32, uint32, bool)` | `Spell::EffectDispel()`, `Spell::EffectStealBeneficialBuff()` | Successful dispel or steal with removed aura spell id |
+| `OnInstanceIdRemoved(uint32)` *(mainline)* | `InstanceSaveMgr::DeleteInstanceSaveIfNeeded()` | Safety-net cleanup when an instance save is deleted |
 | `OnBeforeSetBossState(...)` *(mainline)* | `InstanceScript::SetBossState()` | Boss encounter state transition (pull/kill/wipe) |
 | `OnAfterUpdateEncounterState(...)` *(mainline)* | `Map::UpdateEncounterState()` | Encounter credit with DBC boss names, difficulty, completion mask |
 
@@ -160,7 +195,4 @@ have zero gameplay impact.
 
 See [FUTURE.md](FUTURE.md) for the full list. Highlights:
 
-- `SPELL_DISPEL` / `SPELL_STOLEN` / `SPELL_INTERRUPT` events
-- `LOOT` events for boss drop tracking
-- Per-target hit/miss breakdown in `SPELL_CAST_SUCCESS` (from `Spell::m_UniqueTargetInfo`)
 - Submit custom hooks as an upstream AzerothCore PR
