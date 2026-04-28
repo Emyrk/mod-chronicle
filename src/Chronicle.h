@@ -21,7 +21,7 @@
 #include "DBCEnums.h"      // Difficulty
 #include <array>
 #include <chrono>
-#include <future>
+#include <condition_variable>
 #include <fstream>
 #include <memory>
 #include <mutex>
@@ -272,7 +272,8 @@ private:
     std::unordered_map<uint32, std::string> _instanceTokens;
 
     std::mutex _taskMutex;
-    std::vector<std::future<void>> _backgroundTasks;
+    std::condition_variable _taskCv;
+    uint32 _activeBackgroundTasks = 0;
     bool _shuttingDown = false;
 
     static void UploadAndDelete(std::string path, std::string url, std::string secret,

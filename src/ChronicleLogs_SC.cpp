@@ -366,10 +366,13 @@ public:
     // -----------------------------------------------------------------------
     void OnSpellSendSpellGo(Spell* spell) override
     {
-        if (!spell || !spell->GetCaster() || !InstanceTracker::Instance().IsEnabled())
+        if (!spell || !InstanceTracker::Instance().IsEnabled())
             return;
 
         Unit* caster = spell->GetCaster();
+        if (!caster)
+            return;
+
         WorldObject* explicitTarget = spell->m_targets.GetObjectTarget();
         if (!explicitTarget)
             explicitTarget = spell->GetOriginalTarget();
@@ -384,7 +387,11 @@ public:
         InstanceTracker::Instance().WriteForUnit(
             caster, EventFormatter::SpellCastSuccess(caster, explicitTarget, spellInfo));
 
-        for (TargetInfo const& targetInfo : *spell->GetUniqueTargetInfo())
+        auto const* uniqueTargets = spell->GetUniqueTargetInfo();
+        if (!uniqueTargets)
+            return;
+
+        for (TargetInfo const& targetInfo : *uniqueTargets)
         {
             SpellMissInfo missInfo = targetInfo.missCondition;
             if (missInfo == SPELL_MISS_NONE && targetInfo.effectMask == 0)
@@ -582,7 +589,7 @@ public:
             return;
 
         InstanceTracker::Instance().EnsureUnitInfo(player);
-        if (lootGuid.IsCreatureOrVehicle())
+        if (!lootGuid.IsEmpty() && lootGuid.IsCreatureOrVehicle())
             if (Creature* lootUnit = player->GetMap() ? player->GetMap()->GetCreature(lootGuid) : nullptr)
                 InstanceTracker::Instance().EnsureUnitInfo(lootUnit);
 
@@ -605,7 +612,7 @@ public:
 
         ObjectGuid lootGuid = player->GetLootGUID();
         InstanceTracker::Instance().EnsureUnitInfo(player);
-        if (lootGuid.IsCreatureOrVehicle())
+        if (!lootGuid.IsEmpty() && lootGuid.IsCreatureOrVehicle())
             if (Creature* lootUnit = player->GetMap() ? player->GetMap()->GetCreature(lootGuid) : nullptr)
                 InstanceTracker::Instance().EnsureUnitInfo(lootUnit);
 

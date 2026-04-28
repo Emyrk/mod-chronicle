@@ -40,6 +40,8 @@
 #include <filesystem>
 #include <iomanip>
 #include <sstream>
+#include <stdexcept>
+#include <thread>
 
 // ===== EventFormatter =====
 
@@ -151,6 +153,11 @@ void AppendObjectParams(std::ostringstream& ss, WorldObject* object, Unit const*
     ss << WorldObjectGuid(object)
        << ",\"" << WorldObjectName(object) << "\""
        << ",0x" << std::hex << WorldObjectFlags(object, relation) << std::dec;
+}
+
+bool StartsWith(std::string const& value, char const* prefix)
+{
+    return value.rfind(prefix, 0) == 0;
 }
 }
 
@@ -1146,13 +1153,8 @@ bool CombatLogWriter::IsIdleFor(std::chrono::seconds idleTimeout) const
 
 namespace
 {
-void ReapCompletedTasks(std::vector<std::future<void>>& tasks)
-{
-    tasks.erase(std::remove_if(tasks.begin(), tasks.end(), [](std::future<void>& task)
-    {
-        return task.valid() && task.wait_for(std::chrono::seconds(0)) == std::future_status::ready;
-    }), tasks.end());
-}
+constexpr uint32 MaxBackgroundTasks = 32;
+constexpr auto ShutdownTaskWaitTimeout = std::chrono::seconds(45);
 }
 
 InstanceTracker& InstanceTracker::Instance()
@@ -1173,6 +1175,22 @@ void InstanceTracker::LoadConfig()
     _rotateOnIdle = sConfigMgr->GetOption<bool>("Chronicle.RotateOnIdle", false);
     _uploadSnapshots = sConfigMgr->GetOption<bool>("Chronicle.UploadSnapshots", true);
     _snapshotOnEncounterCredit = sConfigMgr->GetOption<bool>("Chronicle.SnapshotOnEncounterCredit", true);
+
+    if (!_uploadURL.empty())
+    {
+        if (_requireTls && !StartsWith(_uploadURL, "https://"))
+            LOG_WARN("module", "Chronicle: Chronicle.RequireTLS is enabled, but UploadURL is not https:// ({})", _uploadURL);
+
+        if (_verifyTls && !StartsWith(_uploadURL, "https://"))
+            LOG_WARN("module", "Chronicle: Chronicle.VerifyTLS has no effect unless UploadURL uses https:// ({})", _uploadURL);
+    }
+
+    if (_rotateOnIdle && !_idleCloseSeconds)
+        LOG_WARN("module", "Chronicle: Chronicle.RotateOnIdle is enabled, but Chronicle.IdleCloseSeconds is 0; idle rotation is disabled");
+
+    if (_snapshotOnEncounterCredit && !_uploadSnapshots)
+        LOG_WARN("module", "Chronicle: Chronicle.SnapshotOnEncounterCredit is enabled, but Chronicle.UploadSnapshots is disabled; encounter-credit snapshots will not run");
+
     LOG_INFO("module", "Chronicle: enabled={}, logDir={}, upload={}, requireTls={}, verifyTls={}, idleCloseSeconds={}, rotateOnIdle={}, uploadSnapshots={}, snapshotOnEncounterCredit={}",
              _enabled, _logDir, _uploadURL.empty() ? "disabled" : _uploadURL,
              _requireTls, _verifyTls, _idleCloseSeconds, _rotateOnIdle, _uploadSnapshots, _snapshotOnEncounterCredit);
@@ -1180,58 +1198,125 @@ void InstanceTracker::LoadConfig()
 
 void InstanceTracker::Shutdown()
 {
-    std::vector<std::future<void>> tasks;
     {
-        std::lock_guard<std::mutex> lock(_taskMutex);
+        std::lock_guard<std::mutex> taskLock(_taskMutex);
         _shuttingDown = true;
-        tasks.swap(_backgroundTasks);
     }
 
-    for (std::future<void>& task : tasks)
-        task.wait();
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+        for (auto& [instanceId, writer] : _writers)
+        {
+            (void)instanceId;
+            if (writer)
+            {
+                writer->Flush();
+                writer->Close();
+            }
+        }
+
+        _writers.clear();
+        _seenUnits.clear();
+        _seenCombatants.clear();
+        _instanceTokens.clear();
+    }
+
+    std::unique_lock<std::mutex> lock(_taskMutex);
+    if (!_taskCv.wait_for(lock, ShutdownTaskWaitTimeout, [this]() { return _activeBackgroundTasks == 0; }))
+        LOG_WARN("module", "Chronicle: shutdown timed out waiting for {} background upload task(s); remaining files will be retried on next startup", _activeBackgroundTasks);
 }
 
 void InstanceTracker::QueueUploadTask(std::string path, uint32 instanceId,
                                       std::string mapName, std::string realmName,
                                       std::string instanceToken)
 {
-    std::lock_guard<std::mutex> lock(_taskMutex);
-    if (_shuttingDown)
-    {
-        LOG_WARN("module", "Chronicle: skipping background upload for {} during shutdown; file preserved for retry", path);
-        return;
-    }
-
-    ReapCompletedTasks(_backgroundTasks);
     std::string uploadUrl = _uploadURL;
     std::string uploadSecret = _uploadSecret;
     bool requireTls = _requireTls;
     bool verifyTls = _verifyTls;
-    _backgroundTasks.emplace_back(std::async(std::launch::async, [
+
+    {
+        std::lock_guard<std::mutex> lock(_taskMutex);
+        if (_shuttingDown)
+        {
+            LOG_WARN("module", "Chronicle: skipping background upload for {} during shutdown; file remains on disk for orphan sweep retry", path);
+            return;
+        }
+
+        if (_activeBackgroundTasks >= MaxBackgroundTasks)
+        {
+            LOG_WARN("module", "Chronicle: skipping background upload for {} because {} task(s) are already in flight; file remains on disk for retry", path, _activeBackgroundTasks);
+            return;
+        }
+
+        ++_activeBackgroundTasks;
+    }
+
+    std::thread([this,
         uploadUrl = std::move(uploadUrl), uploadSecret = std::move(uploadSecret),
         path = std::move(path), instanceId,
         mapName = std::move(mapName), realmName = std::move(realmName),
         instanceToken = std::move(instanceToken), requireTls, verifyTls]() mutable
     {
-        UploadAndDelete(std::move(path), std::move(uploadUrl), std::move(uploadSecret),
-                        instanceId, std::move(mapName),
-                        std::move(realmName), std::move(instanceToken), requireTls, verifyTls);
-    }));
+        try
+        {
+            UploadAndDelete(std::move(path), std::move(uploadUrl), std::move(uploadSecret),
+                            instanceId, std::move(mapName), std::move(realmName),
+                            std::move(instanceToken), requireTls, verifyTls);
+        }
+        catch (std::exception const& e)
+        {
+            LOG_ERROR("module", "Chronicle: unexpected background upload exception: {}", e.what());
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(_taskMutex);
+            if (_activeBackgroundTasks > 0)
+                --_activeBackgroundTasks;
+        }
+
+        _taskCv.notify_all();
+    }).detach();
 }
 
 void InstanceTracker::QueuePingTask(std::string url, std::string secret)
 {
-    std::lock_guard<std::mutex> lock(_taskMutex);
-    if (_shuttingDown)
-        return;
-
-    ReapCompletedTasks(_backgroundTasks);
     bool requireTls = _requireTls;
     bool verifyTls = _verifyTls;
-    _backgroundTasks.emplace_back(std::async(std::launch::async, [url = std::move(url), secret = std::move(secret), requireTls, verifyTls]() mutable
+
     {
-        PingRemote(std::move(url), std::move(secret), requireTls, verifyTls);
-    }));
+        std::lock_guard<std::mutex> lock(_taskMutex);
+        if (_shuttingDown)
+            return;
+
+        if (_activeBackgroundTasks >= MaxBackgroundTasks)
+        {
+            LOG_WARN("module", "Chronicle: skipping startup ping because {} background task(s) are already in flight", _activeBackgroundTasks);
+            return;
+        }
+
+        ++_activeBackgroundTasks;
+    }
+
+    std::thread([this, url = std::move(url), secret = std::move(secret), requireTls, verifyTls]() mutable
+    {
+        try
+        {
+            PingRemote(std::move(url), std::move(secret), requireTls, verifyTls);
+        }
+        catch (std::exception const& e)
+        {
+            LOG_ERROR("module", "Chronicle: unexpected background ping exception: {}", e.what());
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(_taskMutex);
+            if (_activeBackgroundTasks > 0)
+                --_activeBackgroundTasks;
+        }
+
+        _taskCv.notify_all();
+    }).detach();
 }
 
 void InstanceTracker::UploadOrphanedLogs()
@@ -1366,12 +1451,14 @@ CombatLogWriter* InstanceTracker::GetOrCreateWriter(Map* map)
                 it->second->Close();
                 if (!it->second->Reopen())
                     return nullptr;
+
+                return it->second.get();
             }
         }
-
-        auto refreshed = _writers.find(instanceId);
-        if (refreshed != _writers.end())
-            return refreshed->second.get();
+        else
+        {
+            return it->second.get();
+        }
     }
 
     std::string logsDir = sConfigMgr->GetOption<std::string>("LogsDir", "");
@@ -1592,7 +1679,15 @@ static int DoSend(ParsedUrl const& parsed,
         if (verifyTls)
             stream.set_verify_callback(ssl::host_name_verification(parsed.host));
         if (!SSL_set_tlsext_host_name(stream.native_handle(), parsed.host.c_str()))
-            throw beast::system_error(static_cast<int>(::ERR_get_error()), net::error::get_ssl_category());
+        {
+            unsigned long sslError = ::ERR_get_error();
+            char errorBuffer[256] = {};
+            if (sslError)
+                ::ERR_error_string_n(sslError, errorBuffer, sizeof(errorBuffer));
+
+            throw std::runtime_error(sslError ? std::string("failed to set TLS SNI: ") + errorBuffer
+                                              : std::string("failed to set TLS SNI"));
+        }
 
         beast::get_lowest_layer(stream).expires_after(ConnectTimeout);
         beast::get_lowest_layer(stream).connect(endpoints);
