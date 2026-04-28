@@ -30,6 +30,9 @@
 #include <boost/asio/connect.hpp>
 #include <boost/asio/ip/tcp.hpp>
 #include <boost/asio/ssl/context.hpp>
+#include <boost/asio/ssl/host_name_verification.hpp>
+
+#include <openssl/err.h>
 
 #include <algorithm>
 #include <chrono>
@@ -58,28 +61,106 @@ uint64 EventFormatter::Now()
             .count());
 }
 
-// ---------------------------------------------------------------------------
-// UnitFlags — compute WotLK COMBATLOG_OBJECT_* flags from Unit properties.
-// This is incomplete compared to the client side logs.
-// ---------------------------------------------------------------------------
-uint32 EventFormatter::UnitFlags(Unit* unit)
+namespace
+{
+constexpr uint32 COMBATLOG_OBJECT_AFFILIATION_MINE     = 0x0001;
+constexpr uint32 COMBATLOG_OBJECT_AFFILIATION_PARTY    = 0x0002;
+constexpr uint32 COMBATLOG_OBJECT_AFFILIATION_RAID     = 0x0004;
+constexpr uint32 COMBATLOG_OBJECT_AFFILIATION_OUTSIDER = 0x0008;
+constexpr uint32 COMBATLOG_OBJECT_REACTION_FRIENDLY    = 0x0010;
+constexpr uint32 COMBATLOG_OBJECT_REACTION_NEUTRAL     = 0x0020;
+constexpr uint32 COMBATLOG_OBJECT_REACTION_HOSTILE     = 0x0040;
+constexpr uint32 COMBATLOG_OBJECT_CONTROL_PLAYER       = 0x0100;
+constexpr uint32 COMBATLOG_OBJECT_CONTROL_NPC          = 0x0200;
+constexpr uint32 COMBATLOG_OBJECT_TYPE_PLAYER          = 0x0400;
+constexpr uint32 COMBATLOG_OBJECT_TYPE_NPC             = 0x0800;
+constexpr uint32 COMBATLOG_OBJECT_TYPE_PET             = 0x1000;
+constexpr uint32 COMBATLOG_OBJECT_TYPE_GUARDIAN        = 0x2000;
+
+uint32 BuildUnitFlags(Unit* unit, Unit const* relation)
 {
     if (!unit)
         return 0;
 
     uint32 flags = 0;
 
-    // Type flags
     if (unit->IsPlayer())
-        flags |= 0x0400;  // COMBATLOG_OBJECT_TYPE_PLAYER
+        flags |= COMBATLOG_OBJECT_TYPE_PLAYER;
     else if (unit->IsGuardian())
-        flags |= 0x2000;  // COMBATLOG_OBJECT_TYPE_GUARDIAN
+        flags |= COMBATLOG_OBJECT_TYPE_GUARDIAN;
     else if (unit->IsPet())
-        flags |= 0x1000;  // COMBATLOG_OBJECT_TYPE_PET
+        flags |= COMBATLOG_OBJECT_TYPE_PET;
     else
-        flags |= 0x0800;  // COMBATLOG_OBJECT_TYPE_NPC
+        flags |= COMBATLOG_OBJECT_TYPE_NPC;
+
+    flags |= unit->IsControlledByPlayer() ? COMBATLOG_OBJECT_CONTROL_PLAYER : COMBATLOG_OBJECT_CONTROL_NPC;
+    flags |= COMBATLOG_OBJECT_AFFILIATION_OUTSIDER;
+    flags |= COMBATLOG_OBJECT_REACTION_NEUTRAL;
+
+    if (!relation)
+        return flags;
+
+    flags &= ~(COMBATLOG_OBJECT_REACTION_FRIENDLY | COMBATLOG_OBJECT_REACTION_NEUTRAL | COMBATLOG_OBJECT_REACTION_HOSTILE);
+    if (unit == relation || unit->IsFriendlyTo(relation) || relation->IsFriendlyTo(unit))
+        flags |= COMBATLOG_OBJECT_REACTION_FRIENDLY;
+    else if (unit->IsHostileTo(relation) || relation->IsHostileTo(unit))
+        flags |= COMBATLOG_OBJECT_REACTION_HOSTILE;
+    else
+        flags |= COMBATLOG_OBJECT_REACTION_NEUTRAL;
+
+    Player const* owner = unit->GetCharmerOrOwnerPlayerOrPlayerItself();
+    Player const* otherOwner = relation->GetCharmerOrOwnerPlayerOrPlayerItself();
+    if (!owner || !otherOwner)
+        return flags;
+
+    flags &= ~(COMBATLOG_OBJECT_AFFILIATION_MINE | COMBATLOG_OBJECT_AFFILIATION_PARTY |
+               COMBATLOG_OBJECT_AFFILIATION_RAID | COMBATLOG_OBJECT_AFFILIATION_OUTSIDER);
+
+    if (owner == otherOwner)
+        flags |= COMBATLOG_OBJECT_AFFILIATION_MINE;
+    else if (owner->IsInSameGroupWith(otherOwner))
+        flags |= COMBATLOG_OBJECT_AFFILIATION_PARTY;
+    else if (owner->IsInSameRaidWith(otherOwner))
+        flags |= COMBATLOG_OBJECT_AFFILIATION_RAID;
+    else
+        flags |= COMBATLOG_OBJECT_AFFILIATION_OUTSIDER;
 
     return flags;
+}
+
+uint32 WorldObjectFlags(WorldObject* object, Unit const* relation)
+{
+    if (Unit* unit = object ? object->ToUnit() : nullptr)
+        return BuildUnitFlags(unit, relation);
+
+    return 0;
+}
+
+std::string WorldObjectGuid(WorldObject* object)
+{
+    return EventFormatter::Guid(object ? object->GetGUID() : ObjectGuid::Empty);
+}
+
+std::string WorldObjectName(WorldObject* object)
+{
+    return object ? object->GetName() : "";
+}
+
+void AppendObjectParams(std::ostringstream& ss, WorldObject* object, Unit const* relation)
+{
+    ss << WorldObjectGuid(object)
+       << ",\"" << WorldObjectName(object) << "\""
+       << ",0x" << std::hex << WorldObjectFlags(object, relation) << std::dec;
+}
+}
+
+// ---------------------------------------------------------------------------
+// UnitFlags — compute WotLK COMBATLOG_OBJECT_* flags from Unit properties.
+// This is incomplete compared to the client side logs.
+// ---------------------------------------------------------------------------
+uint32 EventFormatter::UnitFlags(Unit* unit)
+{
+    return BuildUnitFlags(unit, nullptr);
 }
 
 // ---------------------------------------------------------------------------
@@ -88,12 +169,9 @@ uint32 EventFormatter::UnitFlags(Unit* unit)
 std::string EventFormatter::BaseParams(Unit* source, Unit* dest)
 {
     std::ostringstream ss;
-    ss << Guid(source ? source->GetGUID() : ObjectGuid::Empty)
-       << ",\"" << (source ? source->GetName() : "") << "\""
-       << ",0x0"
-       << "," << Guid(dest ? dest->GetGUID() : ObjectGuid::Empty)
-       << ",\"" << (dest ? dest->GetName() : "") << "\""
-       << ",0x0";
+    AppendObjectParams(ss, source, dest);
+    ss << ",";
+    AppendObjectParams(ss, dest, source);
     return ss.str();
 }
 
@@ -363,6 +441,64 @@ static const char* SpellMissInfoToString(SpellMissInfo info)
     }
 }
 
+static const char* SpellTargetResultToString(SpellMissInfo info)
+{
+    return info == SPELL_MISS_NONE ? "HIT" : SpellMissInfoToString(info);
+}
+
+static WorldObject* ResolveLootSourceObject(Player* looter, ObjectGuid lootGuid)
+{
+    if (!looter)
+        return nullptr;
+
+    Map* map = looter->GetMap();
+    if (!map)
+        return nullptr;
+
+    if (lootGuid.IsCreatureOrVehicle())
+        return map->GetCreature(lootGuid);
+
+    if (lootGuid.IsGameObject())
+        return map->GetGameObject(lootGuid);
+
+    return nullptr;
+}
+
+static const char* LootSourceTypeToString(ObjectGuid lootGuid)
+{
+    if (lootGuid.IsCreatureOrVehicle())
+        return "CREATURE";
+    if (lootGuid.IsGameObject())
+        return "GAMEOBJECT";
+    if (lootGuid.IsItem())
+        return "ITEM";
+    if (lootGuid.IsCorpse())
+        return "CORPSE";
+
+    return "UNKNOWN";
+}
+
+static void AppendLootSourceParams(std::ostringstream& ss, Player* looter, ObjectGuid lootGuid)
+{
+    if (WorldObject* source = ResolveLootSourceObject(looter, lootGuid))
+    {
+        AppendObjectParams(ss, source, looter);
+        return;
+    }
+
+    if (Item* container = looter ? looter->GetItemByGuid(lootGuid) : nullptr)
+    {
+        ss << EventFormatter::Guid(container->GetGUID())
+           << ",\"" << container->GetTemplate()->Name1 << "\""
+           << ",0x0";
+        return;
+    }
+
+    ss << EventFormatter::Guid(lootGuid)
+       << ",\"\""
+       << ",0x0";
+}
+
 // Helper: emit the spell prefix triple: spellId,"spellName",spellSchool(hex)
 static void AppendSpellPrefix(std::ostringstream& ss, uint32 spellId,
                                char const* spellName, uint32 schoolMask)
@@ -400,6 +536,8 @@ std::string EventFormatter::SwingDamage(CalcDamageInfo* damageInfo,
     uint32 amount   = damageInfo->damages[slot].damage;
     uint32 school   = damageInfo->damages[slot].damageSchoolMask;
     uint32 resisted = damageInfo->damages[slot].resist;
+    // AzerothCore sends one blocked_amount for the packet, not one per sub-damage
+    // entry, so emit it on slot 0 only to avoid double-counting on split-school hits.
     uint32 blocked  = slot == 0 ? damageInfo->blocked_amount : 0;
     uint32 absorbed = damageInfo->damages[slot].absorb;
     bool   crit     = damageInfo->hitOutCome == MELEE_HIT_CRIT;
@@ -552,6 +690,29 @@ std::string EventFormatter::SpellPeriodicHeal(Unit* victim,
 }
 
 // ---------------------------------------------------------------------------
+// SPELL_PERIODIC_DRAIN — periodic mana/resource drain tick.
+// WotLK format suffix: amount,powerType,extraAmount
+// extraAmount is derived from the packet-visible gain multiplier.
+// ---------------------------------------------------------------------------
+std::string EventFormatter::SpellPeriodicDrain(Unit* victim,
+                                               SpellPeriodicAuraLogInfo* pInfo)
+{
+    AuraEffect const* auraEff = pInfo->auraEff;
+    Unit* caster = auraEff->GetCaster();
+    SpellInfo const* spell = auraEff->GetSpellInfo();
+    int32 extraAmount = static_cast<int32>(pInfo->damage * pInfo->multiplier);
+
+    std::ostringstream ss;
+    ss << Now() << "  SPELL_PERIODIC_DRAIN,"
+       << BaseParams(caster, victim);
+    AppendSpellPrefix(ss, spell->Id, spell->SpellName[0], spell->SchoolMask);
+    ss << "," << pInfo->damage
+       << "," << static_cast<int32>(auraEff->GetMiscValue())
+       << "," << extraAmount;
+    return ss.str();
+}
+
+// ---------------------------------------------------------------------------
 // SPELL_PERIODIC_ENERGIZE — periodic mana/energy tick.
 // ---------------------------------------------------------------------------
 std::string EventFormatter::SpellPeriodicEnergize(Unit* victim,
@@ -607,9 +768,11 @@ std::string EventFormatter::DamageShield(DamageInfo* damageInfo, uint32 overkill
 std::string EventFormatter::SpellAbsorbed(DamageInfo& dmgInfo,
     SpellInfo const* absorbSpell, Unit* absorbCaster, uint32 absorbAmount)
 {
+    Unit* victim = dmgInfo.GetVictim();
+
     std::ostringstream ss;
     ss << Now() << "  SPELL_ABSORBED,"
-       << BaseParams(dmgInfo.GetAttacker(), dmgInfo.GetVictim());
+       << BaseParams(dmgInfo.GetAttacker(), victim);
 
     // If damage was from a spell, emit the damage spell prefix.
     SpellInfo const* dmgSpell = dmgInfo.GetSpellInfo();
@@ -618,9 +781,8 @@ std::string EventFormatter::SpellAbsorbed(DamageInfo& dmgInfo,
                           dmgSpell->SchoolMask);
 
     // Absorb caster (3 fields: GUID, name, flags).
-    ss << "," << Guid(absorbCaster ? absorbCaster->GetGUID() : ObjectGuid::Empty)
-       << ",\"" << (absorbCaster ? absorbCaster->GetName() : "") << "\""
-       << ",0x" << std::hex << UnitFlags(absorbCaster) << std::dec;
+    ss << ",";
+    AppendObjectParams(ss, absorbCaster, victim);
 
     // Absorb spell (id, name, school).
     AppendSpellPrefix(ss, absorbSpell->Id, absorbSpell->SpellName[0],
@@ -667,11 +829,16 @@ std::string EventFormatter::SpellAuraRemoved(Unit* caster, Unit* target,
 // ---------------------------------------------------------------------------
 // SPELL_CAST_SUCCESS — spell cast completed.
 // ---------------------------------------------------------------------------
-std::string EventFormatter::SpellCastSuccess(Unit* caster, SpellInfo const* spell)
+std::string EventFormatter::SpellCastSuccess(Unit* caster, WorldObject* explicitTarget,
+                                                            SpellInfo const* spell)
 {
+    Unit* targetUnit = explicitTarget ? explicitTarget->ToUnit() : nullptr;
+
     std::ostringstream ss;
-    ss << Now() << "  SPELL_CAST_SUCCESS,"
-       << BaseParams(caster, caster);
+    ss << Now() << "  SPELL_CAST_SUCCESS,";
+    AppendObjectParams(ss, caster, targetUnit);
+    ss << ",";
+    AppendObjectParams(ss, explicitTarget, caster);
     AppendSpellPrefix(ss, spell->Id, spell->SpellName[0], spell->SchoolMask);
     return ss.str();
 }
@@ -683,14 +850,13 @@ std::string EventFormatter::SpellCastSuccess(Unit* caster, SpellInfo const* spel
 std::string EventFormatter::SpellSummon(Unit* caster, SpellInfo const* spell,
                                          WorldObject* summoned)
 {
+    Unit* summonedUnit = summoned ? summoned->ToUnit() : nullptr;
+
     std::ostringstream ss;
-    ss << Now() << "  SPELL_SUMMON,"
-       << Guid(caster ? caster->GetGUID() : ObjectGuid::Empty)
-       << ",\"" << (caster ? caster->GetName() : "") << "\""
-       << ",0x0"
-       << "," << Guid(summoned ? summoned->GetGUID() : ObjectGuid::Empty)
-       << ",\"" << (summoned ? summoned->GetName() : "") << "\""
-       << ",0x0";
+    ss << Now() << "  SPELL_SUMMON,";
+    AppendObjectParams(ss, caster, summonedUnit);
+    ss << ",";
+    AppendObjectParams(ss, summoned, caster);
     AppendSpellPrefix(ss, spell->Id, spell->SpellName[0], spell->SchoolMask);
     return ss.str();
 }
@@ -747,7 +913,7 @@ std::string EventFormatter::EnvironmentalDamage(Player* victim,
        << "0x0000000000000000,\"\",0x0"   // source (environment — no unit)
        << "," << Guid(victim->GetGUID())
        << ",\"" << victim->GetName() << "\""
-       << ",0x0"
+         << ",0x" << std::hex << UnitFlags(victim) << std::dec
        << "," << EnvTypeToString(envType);
     AppendDamageSuffix(ss, damage, 0, school, 0, 0, 0, false, false, false);
     return ss.str();
@@ -761,14 +927,84 @@ std::string EventFormatter::SpellInterrupt(Unit* interrupter, Unit* interrupted,
 
     std::ostringstream ss;
     ss << Now() << "  SPELL_INTERRUPT,"
-       << BaseParams(interrupter, interrupted)
-       << "," << interruptSpellId
-       << ",\"" << (intSpell ? intSpell->SpellName[0] : "") << "\""
-       << ",0x" << std::hex << (intSpell ? static_cast<uint32>(intSpell->SchoolMask) : 0u)
-       << std::dec
-       << "," << interruptedSpellId
-       << ",\"" << (victimSpell ? victimSpell->SpellName[0] : "") << "\""
-       << ",0x" << std::hex << (victimSpell ? static_cast<uint32>(victimSpell->SchoolMask) : 0u);
+         << BaseParams(interrupter, interrupted);
+     AppendSpellPrefix(ss, interruptSpellId,
+                             intSpell ? intSpell->SpellName[0] : "",
+                             intSpell ? static_cast<uint32>(intSpell->SchoolMask) : 0u);
+     AppendSpellPrefix(ss, interruptedSpellId,
+                             victimSpell ? victimSpell->SpellName[0] : "",
+                             victimSpell ? static_cast<uint32>(victimSpell->SchoolMask) : 0u);
+    return ss.str();
+}
+
+std::string EventFormatter::SpellDispel(Unit* dispeller, Unit* victim,
+                                        uint32 dispelSpellId, uint32 removedSpellId,
+                                        bool isSteal)
+{
+    SpellInfo const* dispelSpell = sSpellMgr->GetSpellInfo(dispelSpellId);
+    SpellInfo const* removedSpell = sSpellMgr->GetSpellInfo(removedSpellId);
+
+    std::ostringstream ss;
+    ss << Now() << "  " << (isSteal ? "SPELL_STOLEN," : "SPELL_DISPEL,")
+       << BaseParams(dispeller, victim);
+    AppendSpellPrefix(ss, dispelSpellId,
+                      dispelSpell ? dispelSpell->SpellName[0] : "",
+                      dispelSpell ? static_cast<uint32>(dispelSpell->SchoolMask) : 0u);
+    AppendSpellPrefix(ss, removedSpellId,
+                      removedSpell ? removedSpell->SpellName[0] : "",
+                      removedSpell ? static_cast<uint32>(removedSpell->SchoolMask) : 0u);
+    ss << "," << ((removedSpell && removedSpell->IsPositive()) ? "BUFF" : "DEBUFF");
+    return ss.str();
+}
+
+std::string EventFormatter::SpellTargetResult(Unit* caster, Unit* target,
+                                              SpellInfo const* spell,
+                                              SpellMissInfo missInfo,
+                                              SpellMissInfo reflectResult,
+                                              uint8 effectMask)
+{
+    std::ostringstream ss;
+    ss << Now() << "  CHRONICLE_SPELL_TARGET_RESULT,"
+       << BaseParams(caster, target);
+    AppendSpellPrefix(ss, spell ? spell->Id : 0,
+                      spell ? spell->SpellName[0] : "",
+                      spell ? static_cast<uint32>(spell->SchoolMask) : 0u);
+    ss << ",\"" << SpellTargetResultToString(missInfo) << "\"";
+    if (missInfo == SPELL_MISS_REFLECT)
+        ss << ",\"" << SpellTargetResultToString(reflectResult) << "\"";
+    else
+        ss << ",nil";
+    ss << ",0x" << std::hex << static_cast<uint32>(effectMask) << std::dec;
+    return ss.str();
+}
+
+std::string EventFormatter::LootItem(Player* looter, ObjectGuid lootGuid,
+                                     Item* item, uint32 count)
+{
+    std::ostringstream ss;
+    WorldObject* source = ResolveLootSourceObject(looter, lootGuid);
+    ss << Now() << "  CHRONICLE_LOOT_ITEM,";
+    AppendLootSourceParams(ss, looter, lootGuid);
+    ss << ",";
+    AppendObjectParams(ss, looter, source ? source->ToUnit() : looter);
+    ss << ",\"" << LootSourceTypeToString(lootGuid) << "\""
+       << "," << (item ? item->GetEntry() : 0)
+       << ",\"" << (item ? item->GetTemplate()->Name1 : "") << "\""
+       << "," << count;
+    return ss.str();
+}
+
+std::string EventFormatter::LootMoney(Player* looter, ObjectGuid lootGuid,
+                                      uint32 amount)
+{
+    std::ostringstream ss;
+    WorldObject* source = ResolveLootSourceObject(looter, lootGuid);
+    ss << Now() << "  CHRONICLE_LOOT_MONEY,";
+    AppendLootSourceParams(ss, looter, lootGuid);
+    ss << ",";
+    AppendObjectParams(ss, looter, source ? source->ToUnit() : looter);
+    ss << ",\"" << LootSourceTypeToString(lootGuid) << "\""
+       << "," << amount;
     return ss.str();
 }
 
@@ -815,9 +1051,15 @@ std::string EventFormatter::EncounterCredit(
 
 CombatLogWriter::CombatLogWriter(std::string const& dir, uint32 mapId, uint32 instanceId,
                                  std::string const& mapName, std::string const& realmName)
-    : _instanceId(instanceId), _mapName(mapName), _realmName(realmName)
+    : _dir(dir), _mapId(mapId), _instanceId(instanceId), _mapName(mapName), _realmName(realmName),
+      _lastWriteTime(std::chrono::steady_clock::now())
 {
-    std::filesystem::create_directories(dir);
+    OpenNewFile();
+}
+
+void CombatLogWriter::OpenNewFile()
+{
+    std::filesystem::create_directories(_dir);
 
     auto now = std::chrono::system_clock::now();
     auto epoch = std::chrono::duration_cast<std::chrono::seconds>(
@@ -826,10 +1068,11 @@ CombatLogWriter::CombatLogWriter(std::string const& dir, uint32 mapId, uint32 in
 
     char filename[128];
     snprintf(filename, sizeof(filename), "instance_%u_%u_%lld.log",
-             mapId, instanceId, static_cast<long long>(epoch));
+             _mapId, _instanceId, static_cast<long long>(epoch));
 
-    _path = dir + "/" + filename;
+    _path = _dir + "/" + filename;
     _file.open(_path, std::ios::out | std::ios::app);
+    _lastWriteTime = std::chrono::steady_clock::now();
 
     if (_file.is_open())
     {
@@ -849,7 +1092,10 @@ CombatLogWriter::~CombatLogWriter()
 void CombatLogWriter::WriteLine(std::string const& line)
 {
     if (_file.is_open())
-        _file << line << std::endl;
+    {
+        _file << line << '\n';
+        _lastWriteTime = std::chrono::steady_clock::now();
+    }
 }
 
 void CombatLogWriter::Flush()
@@ -868,12 +1114,46 @@ void CombatLogWriter::Close()
     }
 }
 
+bool CombatLogWriter::Reopen()
+{
+    if (_file.is_open())
+        return true;
+
+    _file.open(_path, std::ios::out | std::ios::app);
+    if (_file.is_open())
+    {
+        _lastWriteTime = std::chrono::steady_clock::now();
+        LOG_INFO("module", "Chronicle: reopened log file {}", _path);
+        return true;
+    }
+
+    LOG_ERROR("module", "Chronicle: FAILED to reopen log file {}", _path);
+    return false;
+}
+
 bool CombatLogWriter::IsOpen() const
 {
     return _file.is_open();
 }
 
+bool CombatLogWriter::IsIdleFor(std::chrono::seconds idleTimeout) const
+{
+    return idleTimeout.count() > 0 &&
+           std::chrono::steady_clock::now() - _lastWriteTime >= idleTimeout;
+}
+
 // ===== InstanceTracker =====
+
+namespace
+{
+void ReapCompletedTasks(std::vector<std::future<void>>& tasks)
+{
+    tasks.erase(std::remove_if(tasks.begin(), tasks.end(), [](std::future<void>& task)
+    {
+        return task.valid() && task.wait_for(std::chrono::seconds(0)) == std::future_status::ready;
+    }), tasks.end());
+}
+}
 
 InstanceTracker& InstanceTracker::Instance()
 {
@@ -887,8 +1167,71 @@ void InstanceTracker::LoadConfig()
     _logDir       = sConfigMgr->GetOption<std::string>("Chronicle.LogDir", "chronicle_logs");
     _uploadURL    = sConfigMgr->GetOption<std::string>("Chronicle.UploadURL", "");
     _uploadSecret = sConfigMgr->GetOption<std::string>("Chronicle.UploadSecret", "");
-    LOG_INFO("module", "Chronicle: enabled={}, logDir={}, upload={}",
-             _enabled, _logDir, _uploadURL.empty() ? "disabled" : _uploadURL);
+    _requireTls = sConfigMgr->GetOption<bool>("Chronicle.RequireTLS", false);
+    _verifyTls = sConfigMgr->GetOption<bool>("Chronicle.VerifyTLS", true);
+    _idleCloseSeconds = sConfigMgr->GetOption<uint32>("Chronicle.IdleCloseSeconds", 0);
+    _rotateOnIdle = sConfigMgr->GetOption<bool>("Chronicle.RotateOnIdle", false);
+    _uploadSnapshots = sConfigMgr->GetOption<bool>("Chronicle.UploadSnapshots", true);
+    _snapshotOnEncounterCredit = sConfigMgr->GetOption<bool>("Chronicle.SnapshotOnEncounterCredit", true);
+    LOG_INFO("module", "Chronicle: enabled={}, logDir={}, upload={}, requireTls={}, verifyTls={}, idleCloseSeconds={}, rotateOnIdle={}, uploadSnapshots={}, snapshotOnEncounterCredit={}",
+             _enabled, _logDir, _uploadURL.empty() ? "disabled" : _uploadURL,
+             _requireTls, _verifyTls, _idleCloseSeconds, _rotateOnIdle, _uploadSnapshots, _snapshotOnEncounterCredit);
+}
+
+void InstanceTracker::Shutdown()
+{
+    std::vector<std::future<void>> tasks;
+    {
+        std::lock_guard<std::mutex> lock(_taskMutex);
+        _shuttingDown = true;
+        tasks.swap(_backgroundTasks);
+    }
+
+    for (std::future<void>& task : tasks)
+        task.wait();
+}
+
+void InstanceTracker::QueueUploadTask(std::string path, uint32 instanceId,
+                                      std::string mapName, std::string realmName,
+                                      std::string instanceToken)
+{
+    std::lock_guard<std::mutex> lock(_taskMutex);
+    if (_shuttingDown)
+    {
+        LOG_WARN("module", "Chronicle: skipping background upload for {} during shutdown; file preserved for retry", path);
+        return;
+    }
+
+    ReapCompletedTasks(_backgroundTasks);
+    std::string uploadUrl = _uploadURL;
+    std::string uploadSecret = _uploadSecret;
+    bool requireTls = _requireTls;
+    bool verifyTls = _verifyTls;
+    _backgroundTasks.emplace_back(std::async(std::launch::async, [
+        uploadUrl = std::move(uploadUrl), uploadSecret = std::move(uploadSecret),
+        path = std::move(path), instanceId,
+        mapName = std::move(mapName), realmName = std::move(realmName),
+        instanceToken = std::move(instanceToken), requireTls, verifyTls]() mutable
+    {
+        UploadAndDelete(std::move(path), std::move(uploadUrl), std::move(uploadSecret),
+                        instanceId, std::move(mapName),
+                        std::move(realmName), std::move(instanceToken), requireTls, verifyTls);
+    }));
+}
+
+void InstanceTracker::QueuePingTask(std::string url, std::string secret)
+{
+    std::lock_guard<std::mutex> lock(_taskMutex);
+    if (_shuttingDown)
+        return;
+
+    ReapCompletedTasks(_backgroundTasks);
+    bool requireTls = _requireTls;
+    bool verifyTls = _verifyTls;
+    _backgroundTasks.emplace_back(std::async(std::launch::async, [url = std::move(url), secret = std::move(secret), requireTls, verifyTls]() mutable
+    {
+        PingRemote(std::move(url), std::move(secret), requireTls, verifyTls);
+    }));
 }
 
 void InstanceTracker::UploadOrphanedLogs()
@@ -922,7 +1265,7 @@ void InstanceTracker::UploadOrphanedLogs()
         if (!entry.is_regular_file())
             continue;
         auto const& p = entry.path();
-        if (p.extension() != ".log")
+        if (p.extension() != ".log" && p.extension() != ".snap")
             continue;
 
         std::string filePath = p.string();
@@ -931,10 +1274,9 @@ void InstanceTracker::UploadOrphanedLogs()
         // We don't have the original instanceId/mapName/realmName/token, so these
         // logs will not concatenate with any existing logs on the server.
         // But it's better than losing them entirely.
-        std::thread(&InstanceTracker::UploadAndDelete, filePath,
-                    _uploadURL, _uploadSecret,
-                    /*instanceId=*/0, /*mapName=*/std::string(""),
-                    /*realmName=*/std::string(""), /*instanceToken=*/std::string("")).detach();
+        QueueUploadTask(filePath,
+                        /*instanceId=*/0, /*mapName=*/std::string(""),
+                        /*realmName=*/std::string(""), /*instanceToken=*/std::string(""));
         ++count;
     }
 
@@ -959,6 +1301,47 @@ std::string InstanceTracker::GetInstanceToken(uint32 instanceId) const
     return it != _instanceTokens.end() ? it->second : "";
 }
 
+void InstanceTracker::EmitCombatantInfoIfNeeded(CombatLogWriter& writer, Player* player, uint32 instanceId)
+{
+    if (!player)
+        return;
+
+    uint64 raw = player->GetGUID().GetRawValue();
+    auto& seenCombatants = _seenCombatants[instanceId];
+    if (!seenCombatants.insert(raw).second)
+        return;
+
+    writer.WriteLine(EventFormatter::CombatantInfo(player));
+}
+
+void InstanceTracker::EmitWriterPreamble(CombatLogWriter& writer, Map* map)
+{
+    uint32 instanceId = map->GetInstanceId();
+    writer.WriteLine(EventFormatter::Header(writer.GetRealmName()));
+    std::string instanceType = map->IsRaid() ? "raid" : "party";
+    writer.WriteLine(EventFormatter::ZoneInfo(map->GetMapName(), map->GetId(), instanceId, instanceType));
+
+    for (MapReference const& ref : map->GetPlayers())
+        EmitCombatantInfoIfNeeded(writer, ref.GetSource(), instanceId);
+
+    writer.Flush();
+}
+
+void InstanceTracker::FinalizeWriterForIdleRotation(uint32 instanceId, std::unique_ptr<CombatLogWriter> writer,
+                                                    std::string instanceToken)
+{
+    if (!writer)
+        return;
+
+    writer->Close();
+
+    if (!_uploadURL.empty() && !_uploadSecret.empty())
+        QueueUploadTask(writer->GetPath(), writer->GetInstanceId(), writer->GetMapName(), writer->GetRealmName(), std::move(instanceToken));
+
+    _seenUnits.erase(instanceId);
+    _seenCombatants.erase(instanceId);
+}
+
 CombatLogWriter* InstanceTracker::GetOrCreateWriter(Map* map)
 {
     if (!map || !map->IsDungeon())
@@ -967,7 +1350,29 @@ CombatLogWriter* InstanceTracker::GetOrCreateWriter(Map* map)
     uint32 instanceId = map->GetInstanceId();
     auto it = _writers.find(instanceId);
     if (it != _writers.end())
-        return it->second.get();
+    {
+        if (_idleCloseSeconds > 0 && it->second->IsIdleFor(std::chrono::seconds(_idleCloseSeconds)))
+        {
+            if (_rotateOnIdle)
+            {
+                LOG_INFO("module", "Chronicle: rotating idle log for instance {} after {} second(s) of inactivity", instanceId, _idleCloseSeconds);
+                std::string token = GetInstanceToken(instanceId);
+                auto idleWriter = std::move(it->second);
+                _writers.erase(it);
+                FinalizeWriterForIdleRotation(instanceId, std::move(idleWriter), std::move(token));
+            }
+            else
+            {
+                it->second->Close();
+                if (!it->second->Reopen())
+                    return nullptr;
+            }
+        }
+
+        auto refreshed = _writers.find(instanceId);
+        if (refreshed != _writers.end())
+            return refreshed->second.get();
+    }
 
     std::string logsDir = sConfigMgr->GetOption<std::string>("LogsDir", "");
     std::string logPath;
@@ -982,13 +1387,12 @@ CombatLogWriter* InstanceTracker::GetOrCreateWriter(Map* map)
     if (!writer->IsOpen())
         return nullptr;
 
-    // Write CHRONICLE_HEADER and CHRONICLE_ZONE_INFO
-    writer->WriteLine(EventFormatter::Header(realmName));
-    std::string instanceType = map->IsRaid() ? "raid" : "party";
-    writer->WriteLine(EventFormatter::ZoneInfo(map->GetMapName(), map->GetId(), instanceId, instanceType));
+    if (!_instanceTokens.count(instanceId))
+        _instanceTokens[instanceId] = GenerateInstanceToken();
 
-    // Generate a unique token for this instance, immune to instance-ID reuse.
-    _instanceTokens[instanceId] = GenerateInstanceToken();
+    _seenUnits.erase(instanceId);
+    _seenCombatants.erase(instanceId);
+    EmitWriterPreamble(*writer, map);
 
     CombatLogWriter* ptr = writer.get();
     _writers[instanceId] = std::move(writer);
@@ -1006,7 +1410,7 @@ void InstanceTracker::OnPlayerEnterInstance(Map* map, Player* player)
     if (!writer)
         return;
 
-    writer->WriteLine(EventFormatter::CombatantInfo(player));
+    EmitCombatantInfoIfNeeded(*writer, player, map->GetInstanceId());
     writer->Flush();
 }
 
@@ -1014,6 +1418,14 @@ void InstanceTracker::OnPlayerLeaveInstance(Map* map, Player* /*player*/)
 {
     if (!_enabled || !map || !map->IsDungeon())
         return;
+}
+
+void InstanceTracker::OnInstanceIdRemoved(uint32 instanceId)
+{
+    if (!_enabled || !instanceId)
+        return;
+
+    RemoveInstance(instanceId);
 }
 
 void InstanceTracker::RemoveInstance(uint32 instanceId)
@@ -1043,16 +1455,12 @@ void InstanceTracker::RemoveInstance(uint32 instanceId)
             _instanceTokens.erase(tokenIt);
         }
         _seenUnits.erase(instanceId);
+        _seenCombatants.erase(instanceId);
     }
 
-    // Upload in background thread (doesn't block game server)
+    // Upload in background without blocking the game thread.
     if (!filePath.empty() && !_uploadURL.empty() && !_uploadSecret.empty())
-    {
-        std::thread(&InstanceTracker::UploadAndDelete, filePath,
-                    _uploadURL, _uploadSecret,
-                    instId, std::move(mapName), std::move(realmName),
-                    std::move(token)).detach();
-    }
+        QueueUploadTask(filePath, instId, std::move(mapName), std::move(realmName), std::move(token));
 }
 
 // ---------------------------------------------------------------------------
@@ -1072,12 +1480,15 @@ struct ParsedUrl
 // Trailing slashes on the configured value are stripped before appending, so
 // "https://host", "https://host/", "https://host/api", and "https://host/api/"
 // all produce well-formed targets.
-static bool ParseUrl(std::string const& rootUrl, std::string const& pathSuffix, ParsedUrl& out)
+static bool ParseUrl(std::string const& rootUrl, std::string const& pathSuffix, ParsedUrl& out, bool requireTls)
 {
     std::string rest;
     if (rootUrl.substr(0, 8) == "https://") { out.scheme = "https"; rest = rootUrl.substr(8); }
     else if (rootUrl.substr(0, 7) == "http://") { out.scheme = "http";  rest = rootUrl.substr(7); }
     else return false;
+
+    if (requireTls && out.scheme != "https")
+        return false;
 
     // Split host[:port] from the path component.
     auto slash = rest.find('/');
@@ -1155,13 +1566,17 @@ static std::string BuildMultipart(std::vector<Bytef> const& compressed,
 // Send an HTTP request and return the response status code.
 // Throws boost::system::system_error or std::exception on network error.
 static int DoSend(ParsedUrl const& parsed,
-                  boost::beast::http::request<boost::beast::http::string_body>& req)
+                  boost::beast::http::request<boost::beast::http::string_body>& req,
+                  bool verifyTls)
 {
     namespace beast = boost::beast;
     namespace http  = beast::http;
     namespace net   = boost::asio;
     namespace ssl   = net::ssl;
     using tcp       = net::ip::tcp;
+
+    static constexpr auto ConnectTimeout = std::chrono::seconds(10);
+    static constexpr auto RequestTimeout = std::chrono::seconds(30);
 
     net::io_context ioc;
     tcp::resolver   resolver(ioc);
@@ -1170,26 +1585,40 @@ static int DoSend(ParsedUrl const& parsed,
     if (parsed.scheme == "https")
     {
         ssl::context ctx(ssl::context::tlsv12_client);
-        ctx.set_default_verify_paths();
+        if (verifyTls)
+            ctx.set_default_verify_paths();
         beast::ssl_stream<beast::tcp_stream> stream(ioc, ctx);
-        SSL_set_tlsext_host_name(stream.native_handle(), parsed.host.c_str());
+        stream.set_verify_mode(verifyTls ? ssl::verify_peer : ssl::verify_none);
+        if (verifyTls)
+            stream.set_verify_callback(ssl::host_name_verification(parsed.host));
+        if (!SSL_set_tlsext_host_name(stream.native_handle(), parsed.host.c_str()))
+            throw beast::system_error(static_cast<int>(::ERR_get_error()), net::error::get_ssl_category());
+
+        beast::get_lowest_layer(stream).expires_after(ConnectTimeout);
         beast::get_lowest_layer(stream).connect(endpoints);
+        beast::get_lowest_layer(stream).expires_after(RequestTimeout);
         stream.handshake(ssl::stream_base::client);
+        beast::get_lowest_layer(stream).expires_after(RequestTimeout);
         http::write(stream, req);
         beast::flat_buffer buf;
         http::response<http::string_body> res;
+        beast::get_lowest_layer(stream).expires_after(RequestTimeout);
         http::read(stream, buf, res);
         beast::error_code ec;
+        beast::get_lowest_layer(stream).expires_never();
         stream.shutdown(ec);  // ignore graceful-shutdown errors
         return static_cast<int>(res.result_int());
     }
     else
     {
         beast::tcp_stream stream(ioc);
+        stream.expires_after(ConnectTimeout);
         stream.connect(endpoints);
+        stream.expires_after(RequestTimeout);
         http::write(stream, req);
         beast::flat_buffer buf;
         http::response<http::string_body> res;
+        stream.expires_after(RequestTimeout);
         http::read(stream, buf, res);
         beast::error_code ec;
         stream.socket().shutdown(tcp::socket::shutdown_both, ec);
@@ -1206,7 +1635,9 @@ void InstanceTracker::UploadAndDelete(std::string path,
                                        uint32 instanceId,
                                        std::string mapName,
                                        std::string realmName,
-                                       std::string instanceToken)
+                                       std::string instanceToken,
+                                       bool requireTls,
+                                       bool verifyTls)
 {
     // 1. Gzip-compress the log file in memory (zlib, windowBits=31 → gzip format).
     auto compressed = GzipFile(path);
@@ -1220,9 +1651,9 @@ void InstanceTracker::UploadAndDelete(std::string path,
     //    Trailing slash on the configured value is handled: both
     //    "https://host" and "https://host/" resolve to /azerothcore/upload.
     ParsedUrl parsed;
-    if (!ParseUrl(url, "/api/v1/azerothcore/upload", parsed))
+    if (!ParseUrl(url, "/api/v1/azerothcore/upload", parsed, requireTls))
     {
-        LOG_ERROR("module", "Chronicle: invalid upload URL: {}", url);
+        LOG_ERROR("module", "Chronicle: invalid upload URL or TLS policy mismatch: {}", url);
         return;
     }
 
@@ -1246,7 +1677,7 @@ void InstanceTracker::UploadAndDelete(std::string path,
     // 5. Send and handle the response.
     try
     {
-        int status = DoSend(parsed, req);
+        int status = DoSend(parsed, req, verifyTls);
         if (status == 201)
         {
             std::filesystem::remove(path);
@@ -1264,12 +1695,12 @@ void InstanceTracker::UploadAndDelete(std::string path,
 }
 
 // static
-void InstanceTracker::PingRemote(std::string url, std::string secret)
+void InstanceTracker::PingRemote(std::string url, std::string secret, bool requireTls, bool verifyTls)
 {
     ParsedUrl parsed;
-    if (!ParseUrl(url, "/api/v1/azerothcore/ping", parsed))
+    if (!ParseUrl(url, "/api/v1/azerothcore/ping", parsed, requireTls))
     {
-        LOG_ERROR("module", "Chronicle: ping failed — invalid URL: {}", url);
+        LOG_ERROR("module", "Chronicle: ping failed — invalid URL or TLS policy mismatch: {}", url);
         return;
     }
 
@@ -1281,7 +1712,7 @@ void InstanceTracker::PingRemote(std::string url, std::string secret)
 
     try
     {
-        int status = DoSend(parsed, req);
+        int status = DoSend(parsed, req, verifyTls);
         if (status == 200)
         {
             LOG_INFO("module", "Chronicle: ping OK (HTTP 200) — connected to {}", url);
@@ -1308,6 +1739,10 @@ void InstanceTracker::EnsureUnitInfo(Unit* unit)
 
     std::lock_guard<std::mutex> lock(_mutex);
 
+    CombatLogWriter* writer = GetOrCreateWriter(map);
+    if (!writer)
+        return;
+
     uint32 instId = map->GetInstanceId();
     uint64 raw = unit->GetGUID().GetRawValue();
 
@@ -1316,11 +1751,7 @@ void InstanceTracker::EnsureUnitInfo(Unit* unit)
         return;
     seen.insert(raw);
 
-    auto it = _writers.find(instId);
-    if (it == _writers.end())
-        return;
-
-    it->second->WriteLine(EventFormatter::UnitInfo(unit));
+    writer->WriteLine(EventFormatter::UnitInfo(unit));
 }
 
 void InstanceTracker::WriteForUnit(Unit* unit, std::string const& line)
@@ -1334,12 +1765,24 @@ void InstanceTracker::WriteForUnit(Unit* unit, std::string const& line)
 
     std::lock_guard<std::mutex> lock(_mutex);
 
-    uint32 instanceId = map->GetInstanceId();
-    auto it = _writers.find(instanceId);
-    if (it == _writers.end())
+    CombatLogWriter* writer = GetOrCreateWriter(map);
+    if (!writer)
         return;
 
-    it->second->WriteLine(line);
+    writer->WriteLine(line);
+}
+
+void InstanceTracker::WriteForMap(Map* map, std::string const& line)
+{
+    if (!_enabled || !map || !map->IsDungeon())
+        return;
+
+    std::lock_guard<std::mutex> lock(_mutex);
+    CombatLogWriter* writer = GetOrCreateWriter(map);
+    if (!writer)
+        return;
+
+    writer->WriteLine(line);
 }
 
 void InstanceTracker::WriteForInstance(uint32 instanceId, std::string const& line)
@@ -1361,9 +1804,20 @@ void InstanceTracker::FlushInstance(uint32 instanceId)
         it->second->Flush();
 }
 
+void InstanceTracker::FlushMap(Map* map)
+{
+    if (!_enabled || !map || !map->IsDungeon())
+        return;
+
+    std::lock_guard<std::mutex> lock(_mutex);
+    CombatLogWriter* writer = GetOrCreateWriter(map);
+    if (writer)
+        writer->Flush();
+}
+
 void InstanceTracker::UploadInstanceSnapshot(uint32 instanceId)
 {
-    if (_uploadURL.empty() || _uploadSecret.empty())
+    if (!_uploadSnapshots || _uploadURL.empty() || _uploadSecret.empty())
         return;
 
     std::string srcPath;
@@ -1396,9 +1850,20 @@ void InstanceTracker::UploadInstanceSnapshot(uint32 instanceId)
         return;
     }
 
-    // Upload (and delete the snapshot copy) in a background thread.
-    std::thread(&InstanceTracker::UploadAndDelete, snapPath,
-                _uploadURL, _uploadSecret,
-                instId, std::move(mapName), std::move(realmName),
-                std::move(token)).detach();
+    // Upload (and delete the snapshot copy on success) in the background.
+    QueueUploadTask(snapPath, instId, std::move(mapName), std::move(realmName), std::move(token));
+}
+
+void InstanceTracker::UploadInstanceSnapshot(Map* map)
+{
+    if (!map || !map->IsDungeon())
+        return;
+
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+        if (!GetOrCreateWriter(map))
+            return;
+    }
+
+    UploadInstanceSnapshot(map->GetInstanceId());
 }
