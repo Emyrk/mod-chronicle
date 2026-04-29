@@ -52,7 +52,7 @@ the standard combat log.
 | `CHRONICLE_HEADER` | Written once when the log file is created (realm name, build info) |
 | `CHRONICLE_ZONE_INFO` | Instance zone name, map ID, instance ID |
 | `CHRONICLE_COMBATANT_INFO` | Player gear, guild, class, race (emitted when a player enters) |
-| `CHRONICLE_UNIT_INFO` | Unit metadata, emitted first time a GUID appears in combat |
+| `CHRONICLE_UNIT_INFO` | Unit metadata, emitted first time a GUID appears in combat (guid, name, level, flags, owner, max health, affiliation, boss marker) |
 | `CHRONICLE_UNIT_EVADE` | Creature entered evade mode |
 | `CHRONICLE_UNIT_COMBAT` | Unit entered combat with a target |
 | `CHRONICLE_LOOT_ITEM` | Item looted, including loot source type, item entry, item name, and count |
@@ -83,6 +83,8 @@ same data the client combat log would show, with full mitigation breakdowns:
 **Loot money suffix:** `sourceType,amount`
 
 **Target-result suffix:** `result,reflectResult,effectMask`
+
+**Unit info suffix:** `guid,"name",level,0xflags,ownerGuid,maxHealth,"affiliation",isBoss`
 
 ## Setup
 
@@ -196,3 +198,10 @@ have zero gameplay impact.
 See [FUTURE.md](FUTURE.md) for the full list. Highlights:
 
 - Submit custom hooks as an upstream AzerothCore PR
+- Add formatter regression tests
+- Improve owner-chain and stable spawn attribution
+
+## Additional References
+
+- [TESTING.md](TESTING.md) — manual smoke-test checklist
+- [UPSTREAM_HOOK_PLAN.md](UPSTREAM_HOOK_PLAN.md) — upstream hook contribution package

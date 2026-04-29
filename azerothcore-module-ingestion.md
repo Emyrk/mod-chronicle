@@ -238,11 +238,13 @@ Expected fields, in order:
 4. `unitFlags`
 5. `ownerGuid`
 6. `maxHealth`
+7. `affiliation`
+8. `isBoss`
 
 Example shape:
 
 ```text
-1777340510910  CHRONICLE_UNIT_INFO,0xF130001C68000001,"Boss Name",63,0x0,0x0000000000000000,450000
+1777340510910  CHRONICLE_UNIT_INFO,0xF130001C68000001,"Boss Name",63,0x848,0x0000000000000000,450000,"HOSTILE",true
 ```
 
 Notes:
@@ -250,7 +252,9 @@ Notes:
 1. `unitFlags` is currently parsed and discarded.
 2. `maxHealth` is currently consumed and discarded.
 3. `ownerGuid` matters for pets, guardians, and other owned units.
-4. Even though some fields are not persisted today, the module should still send them in the expected positions so the parser stays aligned.
+4. `affiliation` is derived from a representative player perspective in the instance and is emitted as `FRIENDLY`, `HOSTILE`, or `NEUTRAL`.
+5. `isBoss` is `true` for world bosses and dungeon bosses as identified by AzerothCore creature helpers.
+6. Even though some fields are not persisted today, the module should still send the legacy first six fields in the expected positions so the parser stays aligned.
 
 ### `CHRONICLE_UNIT_EVADE`
 

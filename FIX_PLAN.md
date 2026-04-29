@@ -36,6 +36,18 @@ Harden `mod-chronicle` from a strong proof-of-concept into a production-ready Az
   - [x] Add packet-aligned per-target cast result logging from `Spell::m_UniqueTargetInfo`
   - [x] Make Chronicle TLS enforcement configurable for HTTP/self-signed dev environments
 
+### Completed on 2026-04-29
+
+- Documentation and operational artifacts refreshed:
+  - [x] Replace stale `AGENTS.md` architecture/format notes with current module behavior
+  - [x] Add manual smoke-test checklist in `TESTING.md`
+  - [x] Add upstream hook contribution package in `UPSTREAM_HOOK_PLAN.md`
+  - [x] Refresh `FUTURE.md` so it only tracks genuinely open work
+- Audit result captured:
+  - [ ] Formatter regression tests still not implemented
+  - [ ] Owner-chain and stable spawn identity attribution still open
+  - [ ] Production secret rotation/externalization remains an operational follow-up
+
 ### Deferred by request
 
 - [ ] Rotate or externalize the upload secret
@@ -540,11 +552,11 @@ Split upstreaming into:
 - [ ] Improve owner-chain and spawn identity attribution
 
 ### Sprint 5 — polish
-- [ ] Update `AGENTS.md`
-- [ ] Fix config comments
+- [x] Update `AGENTS.md`
+- [x] Fix config comments
 - [ ] Add formatter regression tests
-- [ ] Add manual smoke-test checklist
-- [ ] Draft upstream hook contribution package
+- [x] Add manual smoke-test checklist
+- [x] Draft upstream hook contribution package
 
 ---
 
