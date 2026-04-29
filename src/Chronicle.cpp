@@ -6,6 +6,7 @@
 #include "Chronicle.h"
 
 #include "Config.h"
+#include "Creature.h"
 #include "GameTime.h"
 #include "Guild.h"
 #include "Item.h"
@@ -158,6 +159,50 @@ void AppendObjectParams(std::ostringstream& ss, WorldObject* object, Unit const*
 bool StartsWith(std::string const& value, char const* prefix)
 {
     return value.rfind(prefix, 0) == 0;
+}
+
+Player* GetAffiliationReferencePlayer(Unit* unit)
+{
+    if (!unit)
+        return nullptr;
+
+    if (Player* player = unit->GetCharmerOrOwnerPlayerOrPlayerItself())
+        return player;
+
+    Map* map = unit->FindMap();
+    if (!map)
+        return nullptr;
+
+    for (MapReference const& ref : map->GetPlayers())
+        if (Player* player = ref.GetSource())
+            return player;
+
+    return nullptr;
+}
+
+char const* UnitAffiliationToString(Unit* unit, Unit const* relation)
+{
+    if (!unit)
+        return "NEUTRAL";
+
+    if (relation)
+    {
+        if (unit == relation || unit->IsFriendlyTo(relation) || relation->IsFriendlyTo(unit))
+            return "FRIENDLY";
+
+        if (unit->IsHostileTo(relation) || relation->IsHostileTo(unit))
+            return "HOSTILE";
+    }
+
+    return "NEUTRAL";
+}
+
+bool IsBossUnit(Unit* unit)
+{
+    if (Creature* creature = unit ? unit->ToCreature() : nullptr)
+        return creature->isWorldBoss() || creature->IsDungeonBoss();
+
+    return false;
 }
 }
 
@@ -366,12 +411,15 @@ std::string EventFormatter::CombatantInfo(Player* player)
 // ---------------------------------------------------------------------------
 std::string EventFormatter::UnitInfo(Unit* unit)
 {
+    Player* relation = GetAffiliationReferencePlayer(unit);
+    uint32 unitFlags = BuildUnitFlags(unit, relation);
+
     std::ostringstream ss;
     ss << Now() << "  CHRONICLE_UNIT_INFO"
        << "," << Guid(unit->GetGUID())
        << ",\"" << unit->GetName() << "\""
        << "," << static_cast<int>(unit->GetLevel())
-       << ",0x0";
+       << ",0x" << std::hex << unitFlags << std::dec;
 
     ObjectGuid ownerGuid = unit->GetOwnerGUID();
     if (!ownerGuid.IsEmpty())
@@ -379,7 +427,9 @@ std::string EventFormatter::UnitInfo(Unit* unit)
     else
         ss << ",0x0000000000000000";
 
-    ss << "," << unit->GetMaxHealth();
+    ss << "," << unit->GetMaxHealth()
+       << ",\"" << UnitAffiliationToString(unit, relation) << "\""
+       << "," << (IsBossUnit(unit) ? "true" : "false");
     return ss.str();
 }
 
